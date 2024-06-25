@@ -1,0 +1,13 @@
+name: dar_data
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python
+  - geopandas
+  - jupyterlab
+  - ipywidgets
+  - earthaccess
+  - rasterio
+  - rioxarray
+  - unidecode
