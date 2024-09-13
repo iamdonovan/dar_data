@@ -11,3 +11,6 @@ dependencies:
   - rasterio
   - rioxarray
   - unidecode
+  - h5py
+  - h5netcdf
+  - netcdf4
