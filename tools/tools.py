@@ -3,6 +3,8 @@ import re
 from pathlib import Path
 from unidecode import unidecode
 import shapely
+import numpy as np
+import h5py
 import xarray as xr
 import geopandas as gpd
 from pyproj import Proj
@@ -35,17 +37,100 @@ def parse_radius(meta):
     return float(rad_match.group('rad'))
 
 
+def parse_date_range(meta):
+
+    start_re = re.compile(r'''GROUP\s+=\s+RANGEDATETIME''', re.VERBOSE)
+    end_re = re.compile(r'''END_GROUP\s+=\s+RANGEDATETIME''', re.VERBOSE)
+
+    group = meta[start_re.search(meta).start():end_re.search(meta).end()]
+
+    val_re = re.compile(r'''VALUE\s+=\s+"(?P<val>.*?)"\n''', re.VERBOSE)
+    matches = val_re.findall(group)
+
+    start = np.datetime64(matches[2] + 'T' + matches[0])
+    end = np.datetime64(matches[3] + 'T' + matches[1])
+
+    return start + (end - start) / 2
+
+
 def load_data(fn_data):
 
-    ext = os.path.spliteext(fn_data)[-1]
+    parsed = {}
+
+    ext = os.path.splitext(fn_data)[-1]
+
     if ext == '.hdf':
-        pass
+        ds = xr.open_dataset(fn_data, engine='netcdf4')
+        parsed['meta'] = ds.attrs['StructMetadata.0']
+
+        grid_names = list(ds.keys())
+
+        data = {}
+        for grid in grid_names:
+            # TODO: reshape to x, y, time dimensions
+            data[grid] = (['x', 'y'], ds[grid].values)
+        parsed['data'] = data
+
+        meta = ds.attrs['CoreMetadata.0']
+
+        parsed['date'] = parse_date_range(meta)
+
+        cc_re_start = re.compile(r'''OBJECT\s+=\s+QAPERCENTCLOUDCOVER''', re.VERBOSE)
+        cc_re_end = re.compile(r'''END_OBJECT\s+=\s+QAPERCENTCLOUDCOVER''', re.VERBOSE)
+
+        cc_txt = meta[cc_re_start.search(meta).start():cc_re_end.search(meta).end()]
+        cc_val = re.compile(r'''VALUE\s+=\s+(?P<val>\d+)\n''', re.VERBOSE)
+
+        parsed['cloud_cover'] = float(cc_val.search(cc_txt).group('val'))
+
+        row_dim = [n for n in ds.sizes if 'YDim' in n][0]
+        col_dim = [n for n in ds.sizes if 'XDim' in n][0]
+
+        rows, cols = ds.sizes[row_dim], ds.sizes[col_dim]
 
     elif ext == '.h5':
-        pass
+        with h5py.File(fn_data) as ds:
+            parsed['meta'] = ds['HDFEOS INFORMATION/StructMetadata.0'][()].decode('UTF-8')
+
+            data_fields = ds['HDFEOS/GRIDS/VIIRS_Grid_IMG_2D/Data Fields']
+            grid_names = [n for n in data_fields.keys() if 'Projection' not in n]
+
+            data = {}
+            for grid in grid_names:
+                # TODO: reshape to x, y, time dimensions
+                data[grid] = (['x', 'y'], data_fields[grid][:])
+            parsed['data'] = data
+
+        # there has to be a way to get this from h5py.File
+        ds = xr.open_dataset(fn_data, engine='netcdf4')
+
+        start_time = np.datetime64(ds.attrs['StartTime'])
+        end_time = np.datetime64(ds.attrs['EndTime'])
+
+        parsed['date'] = start_time + (end_time - start_time) / 2
+        parsed['cloud_cover'] = ds.attrs['Cloud_Cover_Extent']
+
+        rows, cols = parsed['attributes']['DataRows'], parsed['attributes']['DataColumns']
 
     else:
         pass
+
+    ul, lr = parse_corners(parsed['meta'])
+    radius = parse_radius(parsed['meta'])
+
+    projstr = sin_proj(radius).to_proj4()
+
+    dx = (lr[0] - ul[0]) / cols
+    dy = (ul[1] - lr[1]) / rows
+
+    xx = np.linspace(ul[0], lr[0], cols, endpoint=False)
+    yy = np.linspace(ul[1], lr[1], rows, endpoint=False)
+
+    parsed['spatial'] = {'ul': ul, 'lr': lr, 'proj': projstr, 'dx': dx, 'dy': dy}
+
+    # TODO: create xarray Dataset, including crs variable
+
+    return parsed
 
 
 def to_netcdf(fn_data):
