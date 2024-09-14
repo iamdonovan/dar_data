@@ -5,6 +5,7 @@ from unidecode import unidecode
 import shapely
 import numpy as np
 import h5py
+import rioxarray
 import xarray as xr
 import geopandas as gpd
 from pyproj import Proj
@@ -67,8 +68,7 @@ def load_data(fn_data):
 
         data = {}
         for grid in grid_names:
-            # TODO: reshape to x, y, time dimensions
-            data[grid] = (['x', 'y'], ds[grid].values)
+            data[grid] = (['time', 'y', 'x'], np.expand_dims(ds[grid].values, axis=0))
         parsed['data'] = data
 
         meta = ds.attrs['CoreMetadata.0']
@@ -97,8 +97,7 @@ def load_data(fn_data):
 
             data = {}
             for grid in grid_names:
-                # TODO: reshape to x, y, time dimensions
-                data[grid] = (['x', 'y'], data_fields[grid][:])
+                data[grid] = (['time', 'y', 'x'], np.expand_dims(data_fields[grid][:], axis=0))
             parsed['data'] = data
 
         # there has to be a way to get this from h5py.File
