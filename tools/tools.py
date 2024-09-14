@@ -1,6 +1,8 @@
 import os
 import re
 from pathlib import Path
+
+from earthaccess import download
 from unidecode import unidecode
 import shapely
 import numpy as np
@@ -144,7 +146,11 @@ def download_basin(name, ds_name, data_directory='.'):
     basins = gpd.read_file('../basins.gpkg').set_index('name')
     basin = basins.loc[name, 'geometry']
 
-    search_area = shapely.geometry.polygon.orient(basin.minimum_rotated_rectangle, sign=1)
+    download_from_extent(basin, ds_name, Path(data_directory, unidecode(name)))
+
+
+def download_from_extent(geom, ds_name, data_directory='.'):
+    search_area = shapely.geometry.polygon.orient(geom.minimum_rotated_rectangle, sign=1)
 
     earthaccess.login(strategy='netrc')
 
@@ -155,5 +161,5 @@ def download_basin(name, ds_name, data_directory='.'):
 
     earthaccess.download(
         results,
-        Path(data_directory, f"{unidecode(name)}_{ds_name}")
+        Path(data_directory, ds_name)
     )
