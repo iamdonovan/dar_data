@@ -102,8 +102,8 @@ def _load_data(fn_data):
         cc_txt = meta[cc_re_start.search(meta).start():cc_re_end.search(meta).end()]
         cc_val = re.compile(r'''VALUE\s+=\s+(?P<val>\d+)\n''', re.VERBOSE)
 
-        data['granule'] = (['time'], np.array([os.path.splitext(os.path.basename(fn_data))[0]]))
-        data['cloud_cover'] = (['time'], np.array([float(cc_val.search(cc_txt).group('val'))]))
+        # data['granule'] = (['time'], np.array([os.path.splitext(os.path.basename(fn_data))[0]]))
+        # data['cloud_cover'] = (['time'], np.array([float(cc_val.search(cc_txt).group('val'))]))
 
         parsed['data'] = data
 
@@ -132,8 +132,8 @@ def _load_data(fn_data):
 
         parsed['date'] = start_time + (end_time - start_time) / 2
 
-        data['granule'] = (['time'], np.array([os.path.splitext(os.path.basename(fn_data))[0]]))
-        data['cloud_cover'] = (['time'], np.array([float(ds.attrs['Cloud_Cover_Extent'].strip('%'))]))
+        # data['granule'] = (['time'], np.array([os.path.splitext(os.path.basename(fn_data))[0]]))
+        # data['cloud_cover'] = (['time'], np.array([float(ds.attrs['Cloud_Cover_Extent'].strip('%'))]))
 
         parsed['data'] = data
 
