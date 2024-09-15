@@ -2,6 +2,7 @@ import os
 import re
 from glob import glob
 from pathlib import Path
+import pandas as pd
 from unidecode import unidecode
 import shapely
 import numpy as np
@@ -59,14 +60,16 @@ def _snow_cover(keys, grids, mask=True):
     sc_key = [k for k in keys if 'snow_cover' in k.lower() and 'cgf' not in k.lower()][0]
 
     if isinstance(grids, xr.Dataset):
-        snow_cover = grids[sc_key].values.astype(float)
+        snow_cover = grids[sc_key].values
     else:
-        snow_cover = grids[sc_key][:].astype(float)
+        snow_cover = grids[sc_key][:]
+
+    snow_cover[np.isnan(snow_cover)] = 255
 
     if mask:
-        snow_cover[snow_cover > 100] = np.nan
+        snow_cover[snow_cover > 100] = 255
 
-    return snow_cover
+    return snow_cover.astype(np.uint8)
 
 
 def _load_data(fn_data):
@@ -85,8 +88,8 @@ def _load_data(fn_data):
         snow_cover = _snow_cover(grid_names, ds)
         data['snow_cover'] = (['time', 'y', 'x'], np.expand_dims(snow_cover, axis=0))
 
-        cgf_snow = ds['CGF_NDSI_Snow_Cover'].values
-        cgf_snow[cgf_snow > 100] = np.nan
+        cgf_snow = ds['CGF_NDSI_Snow_Cover'].values.astype(np.uint8)
+        cgf_snow[cgf_snow > 100] = 255
         data['cgf_snow_cover'] = (['time', 'y', 'x'], np.expand_dims(cgf_snow, axis=0))
 
         meta = ds.attrs['CoreMetadata.0']
@@ -116,8 +119,8 @@ def _load_data(fn_data):
             snow_cover = _snow_cover(grid_names, data_fields)
             data['snow_cover'] = (['time', 'y', 'x'], np.expand_dims(snow_cover, axis=0))
 
-            cgf_snow = data_fields['CGF_NDSI_Snow_Cover'][:].astype(float)
-            cgf_snow[cgf_snow > 100] = np.nan
+            cgf_snow = data_fields['CGF_NDSI_Snow_Cover'][:].astype(np.uint8)
+            cgf_snow[cgf_snow > 100] = 255
             data['cgf_snow_cover'] = (['time', 'y', 'x'], np.expand_dims(cgf_snow, axis=0))
 
 
@@ -162,18 +165,26 @@ def _load_data(fn_data):
     return out_ds
 
 
-def stack_data(fn_out, dir_name, return_stack=True):
+def stack_data(fn_out, dir_name):
 
     gran_list = sorted(glob('*.hdf', root_dir=dir_name)) + sorted(glob('*.h5', root_dir=dir_name))
+    dataset = [os.path.basename(fn).split('.')[0] for fn in gran_list]
+    tile_list = [os.path.basename(fn).split('.')[2] for fn in gran_list]
 
-    stack = [_load_data(Path(dir_name, fn)) for fn in gran_list]
+    granules = pd.DataFrame(data={'granule': gran_list, 'tile': tile_list, 'dataset': dataset})
+    tile_stacks = []
 
-    # TODO: group by tile types, concat by time, then concat in space
-    stack_ds = xr.concat(stack, 'time')
-    stack_ds.to_netcdf(fn_out)
+    for (sens, tile), grans in granules.groupby(['dataset', 'tile']):
+        this_stack = [_load_data(Path(dir_name, fn)) for fn in grans['granule']]
+        this_ds = xr.concat(this_stack, 'time')
+        tile_stacks.append(this_ds)
 
-    if return_stack:
-        return stack_ds
+    final_stack = xr.combine_by_coords(tile_stacks)
+
+    final_stack['cloud_cover'].rio.write_nodata(255, inplace=True)
+    final_stack['cgf_cloud_cover'].rio.write_nodata(255, inplace=True)
+
+    final_stack.to_netcdf(fn_out)
 
 
 def download_basin(name, ds_name, data_directory='.'):
