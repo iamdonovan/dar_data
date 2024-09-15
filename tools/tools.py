@@ -1,8 +1,7 @@
 import os
 import re
+from glob import glob
 from pathlib import Path
-
-from earthaccess import download
 from unidecode import unidecode
 import shapely
 import numpy as np
@@ -50,13 +49,27 @@ def parse_date_range(meta):
     val_re = re.compile(r'''VALUE\s+=\s+"(?P<val>.*?)"\n''', re.VERBOSE)
     matches = val_re.findall(group)
 
-    start = np.datetime64(matches[2] + 'T' + matches[0])
-    end = np.datetime64(matches[3] + 'T' + matches[1])
+    start = np.datetime64(matches[2] + 'T' + matches[0], 'ns')
+    end = np.datetime64(matches[3] + 'T' + matches[1], 'ns')
 
     return start + (end - start) / 2
 
 
-def load_data(fn_data):
+def _snow_cover(keys, grids, mask=True):
+    sc_key = [k for k in keys if 'snow_cover' in k.lower() and 'cgf' not in k.lower()][0]
+
+    if isinstance(grids, xr.Dataset):
+        snow_cover = grids[sc_key].values.astype(float)
+    else:
+        snow_cover = grids[sc_key][:].astype(float)
+
+    if mask:
+        snow_cover[snow_cover > 100] = np.nan
+
+    return snow_cover
+
+
+def _load_data(fn_data):
 
     parsed = {}
 
@@ -66,12 +79,15 @@ def load_data(fn_data):
         ds = xr.open_dataset(fn_data, engine='netcdf4')
         parsed['meta'] = ds.attrs['StructMetadata.0']
 
-        grid_names = list(ds.keys())
-
         data = {}
-        for grid in grid_names:
-            data[grid] = (['time', 'y', 'x'], np.expand_dims(ds[grid].values, axis=0))
-        parsed['data'] = data
+
+        grid_names = list(ds.keys())
+        snow_cover = _snow_cover(grid_names, ds)
+        data['snow_cover'] = (['time', 'y', 'x'], np.expand_dims(snow_cover, axis=0))
+
+        cgf_snow = ds['CGF_NDSI_Snow_Cover'].values
+        cgf_snow[cgf_snow > 100] = np.nan
+        data['cgf_snow_cover'] = (['time', 'y', 'x'], np.expand_dims(cgf_snow, axis=0))
 
         meta = ds.attrs['CoreMetadata.0']
 
@@ -83,12 +99,10 @@ def load_data(fn_data):
         cc_txt = meta[cc_re_start.search(meta).start():cc_re_end.search(meta).end()]
         cc_val = re.compile(r'''VALUE\s+=\s+(?P<val>\d+)\n''', re.VERBOSE)
 
-        parsed['cloud_cover'] = float(cc_val.search(cc_txt).group('val'))
+        data['granule'] = (['time'], np.array([os.path.splitext(os.path.basename(fn_data))[0]]))
+        data['cloud_cover'] = (['time'], np.array([float(cc_val.search(cc_txt).group('val'))]))
 
-        row_dim = [n for n in ds.sizes if 'YDim' in n][0]
-        col_dim = [n for n in ds.sizes if 'XDim' in n][0]
-
-        rows, cols = ds.sizes[row_dim], ds.sizes[col_dim]
+        parsed['data'] = data
 
     elif ext == '.h5':
         with h5py.File(fn_data) as ds:
@@ -98,20 +112,27 @@ def load_data(fn_data):
             grid_names = [n for n in data_fields.keys() if 'Projection' not in n]
 
             data = {}
-            for grid in grid_names:
-                data[grid] = (['time', 'y', 'x'], np.expand_dims(data_fields[grid][:], axis=0))
-            parsed['data'] = data
+
+            snow_cover = _snow_cover(grid_names, data_fields)
+            data['snow_cover'] = (['time', 'y', 'x'], np.expand_dims(snow_cover, axis=0))
+
+            cgf_snow = data_fields['CGF_NDSI_Snow_Cover'][:].astype(float)
+            cgf_snow[cgf_snow > 100] = np.nan
+            data['cgf_snow_cover'] = (['time', 'y', 'x'], np.expand_dims(cgf_snow, axis=0))
+
 
         # there has to be a way to get this from h5py.File
         ds = xr.open_dataset(fn_data, engine='netcdf4')
 
-        start_time = np.datetime64(ds.attrs['StartTime'])
-        end_time = np.datetime64(ds.attrs['EndTime'])
+        start_time = np.datetime64(ds.attrs['StartTime'], 'ns')
+        end_time = np.datetime64(ds.attrs['EndTime'], 'ns')
 
         parsed['date'] = start_time + (end_time - start_time) / 2
-        parsed['cloud_cover'] = ds.attrs['Cloud_Cover_Extent']
 
-        rows, cols = parsed['attributes']['DataRows'], parsed['attributes']['DataColumns']
+        data['granule'] = (['time'], np.array([os.path.splitext(os.path.basename(fn_data))[0]]))
+        data['cloud_cover'] = (['time'], np.array([float(ds.attrs['Cloud_Cover_Extent'].strip('%'))]))
+
+        parsed['data'] = data
 
     else:
         pass
@@ -120,26 +141,39 @@ def load_data(fn_data):
     radius = parse_radius(parsed['meta'])
 
     projstr = sin_proj(radius).to_proj4()
+    parsed['spatial'] = {'ul': ul, 'lr': lr, 'proj': projstr}
 
-    dx = (lr[0] - ul[0]) / cols
-    dy = (ul[1] - lr[1]) / rows
+    _, cols, rows = parsed['data']['snow_cover'][1].shape
 
-    xx = np.linspace(ul[0], lr[0], cols, endpoint=False)
-    yy = np.linspace(ul[1], lr[1], rows, endpoint=False)
+    xx = np.linspace(parsed['spatial']['ul'][0], parsed['spatial']['lr'][0], cols, endpoint=False)
+    yy = np.linspace(parsed['spatial']['ul'][1], parsed['spatial']['lr'][1], rows, endpoint=False)
 
-    parsed['spatial'] = {'ul': ul, 'lr': lr, 'proj': projstr, 'dx': dx, 'dy': dy}
+    out_ds = xr.Dataset(
+        data_vars=parsed['data'],
+        coords=dict(
+            x=xx,
+            y=yy,
+            time=[parsed['date']]
+        )
+    )
 
-    # TODO: create xarray Dataset, including crs variable
+    out_ds.rio.write_crs(parsed['spatial']['proj'], inplace=True)
 
-    return parsed
-
-
-def to_netcdf(fn_data):
-    pass
+    return out_ds
 
 
-def to_geotiff(fn_data, dataname):
-    pass
+def stack_data(fn_out, dir_name, return_stack=True):
+
+    gran_list = sorted(glob('*.hdf', root_dir=dir_name)) + sorted(glob('*.h5', root_dir=dir_name))
+
+    stack = [_load_data(Path(dir_name, fn)) for fn in gran_list]
+
+    # TODO: group by tile types, concat by time, then concat in space
+    stack_ds = xr.concat(stack, 'time')
+    stack_ds.to_netcdf(fn_out)
+
+    if return_stack:
+        return stack_ds
 
 
 def download_basin(name, ds_name, data_directory='.'):
