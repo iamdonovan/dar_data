@@ -181,8 +181,8 @@ def stack_data(fn_out, dir_name):
 
     final_stack = xr.combine_by_coords(tile_stacks)
 
-    final_stack['cloud_cover'].rio.write_nodata(255, inplace=True)
-    final_stack['cgf_cloud_cover'].rio.write_nodata(255, inplace=True)
+    final_stack['snow_cover'].rio.write_nodata(255, inplace=True)
+    final_stack['cgf_snow_cover'].rio.write_nodata(255, inplace=True)
 
     final_stack.to_netcdf(fn_out)
 
