@@ -1,5 +1,6 @@
 import os
 import re
+from typing import Any, Union
 from glob import glob
 from pathlib import Path
 import pandas as pd
@@ -14,12 +15,23 @@ from pyproj import Proj
 import earthaccess
 
 
-def sin_proj(radius=6371007.181):
+def sin_proj(radius: float = 6371007.181) -> Proj:
+    """
+    Given a value for Earth radius, return a sinusoidal projection with central longitude and false easting/northing
+    of 0.
+
+    :param radius: the value of Earth radius (in m) to use (default: 6371007.181).
+    """
     return Proj(f"+proj=sinu +lon_0=0 +x_0=0 +y_0=0 +R={radius} +units=m +no_defs")
 
 
-def parse_corners(meta):
+def parse_corners(meta: str) -> tuple[tuple[float, float], tuple[float, float]]:
+    """
+    Parse the upper left and lower right (x, y) coordinates from NASA metadata.
 
+    :param meta: the string representation of the metadata object
+    :return: (ul, lr) coordinate pairs
+    """
     ul_re = re.compile(r'''UpperLeftPointMtrs=\((?P<x>[+-]?\d+\.\d+),(?P<y>[+-]?\d+\.\d+)\)''', re.VERBOSE)
     lr_re = re.compile(r'''LowerRightMtrs=\((?P<x>[+-]?\d+\.\d+),(?P<y>[+-]?\d+\.\d+)\)''', re.VERBOSE)
 
@@ -32,16 +44,26 @@ def parse_corners(meta):
     return ul, lr
 
 
-def parse_radius(meta):
+def parse_radius(meta: str) -> float:
+    """
+    Parse the Earth radius value from NASA metadata.
 
+    :param meta: the string representation of the metadata object
+    :return: the value of Earth radius
+    """
     rad_re = re.compile(r'''ProjParams=\((?P<rad>\d+\.\d+)\,''', re.VERBOSE)
     rad_match = rad_re.search(meta)
 
     return float(rad_match.group('rad'))
 
 
-def parse_date_range(meta):
+def parse_date_range(meta: str) -> np.datetime64:
+    """
+    Parse the RANGEDATETIME start and end values from NASA metadata, then return the midpoint of the date range.
 
+    :param meta: the string representation of the metadata object
+    :return: the midpoint of the date range
+    """
     start_re = re.compile(r'''GROUP\s+=\s+RANGEDATETIME''', re.VERBOSE)
     end_re = re.compile(r'''END_GROUP\s+=\s+RANGEDATETIME''', re.VERBOSE)
 
@@ -56,7 +78,15 @@ def parse_date_range(meta):
     return start + (end - start) / 2
 
 
-def _snow_cover(keys, grids, mask=True):
+def _snow_cover(keys: list, grids: Union[xr.Dataset, dict], mask: bool=True) -> np.ndarray:
+    """
+    Find the snow cover raster from a dataset.
+
+    :param keys: a list of variable names
+    :param grids: an xarray Dataset, or a dict-like representation of a dataset
+    :param mask: whether to mask invalid (> 100) snow cover values [default: True]
+    :return: an array of snow cover values
+    """
     sc_key = [k for k in keys if 'snow_cover' in k.lower() and 'cgf' not in k.lower()][0]
 
     if isinstance(grids, xr.Dataset):
@@ -72,7 +102,13 @@ def _snow_cover(keys, grids, mask=True):
     return snow_cover.astype(np.uint8)
 
 
-def _load_data(fn_data):
+def _load_data(fn_data: Union[str, Path]) -> xr.Dataset:
+    """
+    Load NASA snow cover data (in either HDF or H5 format) and return a homogenized dataset.
+
+    :param fn_data: the filename of the dataset to open
+    :return: an xarray Dataset
+    """
 
     parsed = {}
 
@@ -165,8 +201,14 @@ def _load_data(fn_data):
     return out_ds
 
 
-def stack_data(fn_out, dir_name):
+def stack_data(fn_out: Union[str, Path], dir_name: Union[str, Path]) -> None:
+    """
+    Given a directory name, load all available NASA snow cover datasets into a single stack, and write the stack to
+    disk.
 
+    :param fn_out: the name of the output file to write
+    :param dir_name: the name of the directory to search for datasets
+    """
     gran_list = sorted(glob('*.hdf', root_dir=dir_name)) + sorted(glob('*.h5', root_dir=dir_name))
     dataset = [os.path.basename(fn).split('.')[0] for fn in gran_list]
     tile_list = [os.path.basename(fn).split('.')[2] for fn in gran_list]
@@ -187,14 +229,48 @@ def stack_data(fn_out, dir_name):
     final_stack.to_netcdf(fn_out)
 
 
-def download_basin(name, ds_name, data_directory='.'):
+def reproject_stack(fn_stack: Union[str, Path, xr.Dataset], crs: Any) -> xr.Dataset:
+    """
+    Reproject an xarray dataset to a given CRS.
+
+    :param fn_stack: the name of the dataset to open, or an xarray Dataset
+    :param crs: OGC WKT string or Proj.4 string
+    :return: the reprojected Dataset
+    """
+    if isinstance(fn_stack, (str, Path)):
+        ds = xr.open_dataset(fn_stack, decode_coords='all')
+    else:
+        ds = fn_stack
+
+    return ds.rio.reproject(crs)
+
+
+def download_basin(name: str, ds_name: str, data_directory: Union[str, Path] = '.') -> None:
+    """
+    Download all data from a given EarthData dataset that intersects a basin of a given name,
+    using the file basins.gpkg.
+
+    :param name: the name of the basin to use to search for data
+    :param ds_name: the name of the EarthData dataset to search and download
+    :param data_directory: the name of the directory to download the files to
+    """
     basins = gpd.read_file('../basins.gpkg').set_index('name')
     basin = basins.loc[name, 'geometry']
 
     download_from_extent(basin, ds_name, Path(data_directory, unidecode(name)))
 
 
-def download_from_extent(geom, ds_name, data_directory='.'):
+def download_from_extent(geom: shapely.geometry.Polygon,
+                         ds_name: str,
+                         data_directory: Union[str, Path] = '.') -> None:
+    """
+    Given a geometric representation of a search area, download all granules from an EarthData dataset that intersect
+    that geometry.
+
+    :param geom: a shapely polygon representing the search area (with latitude/longitude coordinates)
+    :param ds_name: the name of the EarthData dataset to search and download
+    :param data_directory: the name of the directory to download the files to
+    """
     search_area = shapely.geometry.polygon.orient(geom.minimum_rotated_rectangle, sign=1)
 
     earthaccess.login(strategy='netrc')
