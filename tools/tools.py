@@ -201,7 +201,7 @@ def _load_data(fn_data: Union[str, Path]) -> xr.Dataset:
     return out_ds
 
 
-def stack_data(fn_out: Union[str, Path], dir_name: Union[str, Path]) -> None:
+def stack_data(fn_out: Union[str, Path], dir_name: Union[str, Path], crs: Any = 4326) -> None:
     """
     Given a directory name, load all available NASA snow cover datasets into a single stack, and write the stack to
     disk.
@@ -226,7 +226,20 @@ def stack_data(fn_out: Union[str, Path], dir_name: Union[str, Path]) -> None:
     final_stack['snow_cover'].rio.write_nodata(255, inplace=True)
     final_stack['cgf_snow_cover'].rio.write_nodata(255, inplace=True)
 
-    final_stack.to_netcdf(fn_out)
+    # reproject the stack to the given CRS
+    final_stack = final_stack.rio.reproject(crs)
+
+    # save the reprojected stack to a file by compressing the snow cover variables
+    final_stack.to_netcdf('tmp.nc', encoding={'snow_cover': {'zlib': True},
+                                              'cgf_snow_cover': {'zlib': True}})
+
+    # have to do this in two parts, because using encoding somehow breaks writing the CRS variable
+    ds = xr.open_dataset('tmp.nc', decode_coords='all')
+    ds.rio.write_crs(ds.spatial_ref.crs_wkt, inplace=True)
+    ds.to_netcdf(fn_out)
+
+    # clean up the temporary file
+    os.remove('tmp.nc')
 
 
 def reproject_stack(fn_stack: Union[str, Path, xr.Dataset], crs: Any) -> xr.Dataset:
@@ -239,6 +252,7 @@ def reproject_stack(fn_stack: Union[str, Path, xr.Dataset], crs: Any) -> xr.Data
     """
     if isinstance(fn_stack, (str, Path)):
         ds = xr.open_dataset(fn_stack, decode_coords='all')
+        ds = ds.rio.write_crs(ds.spatial_ref.crs_wkt)
     else:
         ds = fn_stack
 
