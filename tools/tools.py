@@ -208,6 +208,7 @@ def stack_data(fn_out: Union[str, Path], dir_name: Union[str, Path], crs: Any = 
 
     :param fn_out: the name of the output file to write
     :param dir_name: the name of the directory to search for datasets
+    :param crs: OGC WKT string or Proj.4 string
     """
     gran_list = sorted(glob('*.hdf', root_dir=dir_name)) + sorted(glob('*.h5', root_dir=dir_name))
     dataset = [os.path.basename(fn).split('.')[0] for fn in gran_list]
