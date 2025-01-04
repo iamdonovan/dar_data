@@ -201,7 +201,9 @@ def _load_data(fn_data: Union[str, Path]) -> xr.Dataset:
     return out_ds
 
 
-def stack_data(fn_out: Union[str, Path], dir_name: Union[str, Path], crs: Any = 4326) -> None:
+def stack_data(fn_out: Union[str, Path], dir_name: Union[str, Path],
+               crs: Any = 4326,
+               globstr: str = None) -> None:
     """
     Given a directory name, load all available NASA snow cover datasets into a single stack, and write the stack to
     disk.
@@ -209,8 +211,13 @@ def stack_data(fn_out: Union[str, Path], dir_name: Union[str, Path], crs: Any = 
     :param fn_out: the name of the output file to write
     :param dir_name: the name of the directory to search for datasets
     :param crs: OGC WKT string or Proj.4 string
+    :param globstr: (optional) search string to use to find granules. defaults to *.hdf and *.h5
     """
-    gran_list = sorted(glob('*.hdf', root_dir=dir_name)) + sorted(glob('*.h5', root_dir=dir_name))
+    if globstr is None:
+        gran_list = sorted(glob('*.hdf', root_dir=dir_name)) + sorted(glob('*.h5', root_dir=dir_name))
+    else:
+        gran_list = sorted(glob(globstr, root_dir=dir_name))
+
     dataset = [os.path.basename(fn).split('.')[0] for fn in gran_list]
     tile_list = [os.path.basename(fn).split('.')[2] for fn in gran_list]
 
