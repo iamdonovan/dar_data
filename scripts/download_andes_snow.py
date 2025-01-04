@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 from tools import tools
 from shapely.geometry import Polygon
 
