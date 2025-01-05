@@ -1,5 +1,6 @@
 import os
 import re
+import gc
 from typing import Any, Union
 from glob import glob
 from pathlib import Path
@@ -124,7 +125,7 @@ def _load_data(fn_data: Union[str, Path]) -> xr.Dataset:
         snow_cover = _snow_cover(grid_names, ds)
         data['snow_cover'] = (['time', 'y', 'x'], np.expand_dims(snow_cover, axis=0))
 
-        cgf_snow = ds['CGF_NDSI_Snow_Cover'].values.astype(np.uint8)
+        cgf_snow = ds['CGF_NDSI_Snow_Cover'].fillna(255).values.astype(np.uint8)
         cgf_snow[cgf_snow > 100] = 255
         data['cgf_snow_cover'] = (['time', 'y', 'x'], np.expand_dims(cgf_snow, axis=0))
 
@@ -201,9 +202,11 @@ def _load_data(fn_data: Union[str, Path]) -> xr.Dataset:
     return out_ds
 
 
-def stack_data(fn_out: Union[str, Path], dir_name: Union[str, Path],
+def stack_data(fn_out: Union[str, Path],
+               dir_name: Union[str, Path],
                crs: Any = 4326,
-               globstr: str = None) -> None:
+               globstr: str = None,
+               gran_list: Any = None) -> None:
     """
     Given a directory name, load all available NASA snow cover datasets into a single stack, and write the stack to
     disk.
@@ -212,11 +215,15 @@ def stack_data(fn_out: Union[str, Path], dir_name: Union[str, Path],
     :param dir_name: the name of the directory to search for datasets
     :param crs: OGC WKT string or Proj.4 string
     :param globstr: (optional) search string to use to find granules. defaults to *.hdf and *.h5
+    :param gran_list: (optional) list of granules to load
     """
-    if globstr is None:
-        gran_list = sorted(glob('*.hdf', root_dir=dir_name)) + sorted(glob('*.h5', root_dir=dir_name))
-    else:
-        gran_list = sorted(glob(globstr, root_dir=dir_name))
+    if gran_list is None:
+        if globstr is None:
+            gran_list = (sorted(glob('*.hdf', root_dir=dir_name)) +
+                         sorted(glob('*.h5', root_dir=dir_name)))
+        else:
+            gran_list = sorted(glob(globstr, root_dir=dir_name))
+    print(f"Found {len(gran_list)} tiles to stack.")
 
     dataset = [os.path.basename(fn).split('.')[0] for fn in gran_list]
     tile_list = [os.path.basename(fn).split('.')[2] for fn in gran_list]
@@ -227,27 +234,35 @@ def stack_data(fn_out: Union[str, Path], dir_name: Union[str, Path],
     for (sens, tile), grans in granules.groupby(['dataset', 'tile']):
         this_stack = [_load_data(Path(dir_name, fn)) for fn in grans['granule']]
         this_ds = xr.concat(this_stack, 'time')
-        tile_stacks.append(this_ds)
+
+        # reproject the stack to the given CRS
+        tile_stacks.append(this_ds.rio.reproject(crs))
+
+    print(f"Loaded {len(tile_stacks)} individual tiles. Combining by coordinates.")
 
     final_stack = xr.combine_by_coords(tile_stacks)
 
     final_stack['snow_cover'].rio.write_nodata(255, inplace=True)
     final_stack['cgf_snow_cover'].rio.write_nodata(255, inplace=True)
 
-    # reproject the stack to the given CRS
-    final_stack = final_stack.rio.reproject(crs)
-
     # save the reprojected stack to a file by compressing the snow cover variables
     final_stack.to_netcdf('tmp.nc', encoding={'snow_cover': {'zlib': True},
                                               'cgf_snow_cover': {'zlib': True}})
+    del final_stack, tile_stacks
+    gc.collect()
+
+    print("Saving final NetCDF file.")
 
     # have to do this in two parts, because using encoding somehow breaks writing the CRS variable
     ds = xr.open_dataset('tmp.nc', decode_coords='all')
     ds.rio.write_crs(ds.spatial_ref.crs_wkt, inplace=True)
     ds.to_netcdf(fn_out)
 
+    print("Cleaning up.")
     # clean up the temporary file
     os.remove('tmp.nc')
+
+    print("Finished.")
 
 
 def reproject_stack(fn_stack: Union[str, Path, xr.Dataset], crs: Any) -> xr.Dataset:
