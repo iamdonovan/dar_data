@@ -204,7 +204,6 @@ def _load_data(fn_data: Union[str, Path]) -> xr.Dataset:
 
 def stack_data(fn_out: Union[str, Path],
                dir_name: Union[str, Path],
-               crs: Any = 4326,
                globstr: str = None,
                gran_list: Any = None) -> None:
     """
@@ -213,7 +212,6 @@ def stack_data(fn_out: Union[str, Path],
 
     :param fn_out: the name of the output file to write
     :param dir_name: the name of the directory to search for datasets
-    :param crs: OGC WKT string or Proj.4 string
     :param globstr: (optional) search string to use to find granules. defaults to *.hdf and *.h5
     :param gran_list: (optional) list of granules to load
     """
@@ -236,7 +234,7 @@ def stack_data(fn_out: Union[str, Path],
         this_ds = xr.concat(this_stack, 'time')
 
         # reproject the stack to the given CRS
-        tile_stacks.append(this_ds.rio.reproject(crs))
+        tile_stacks.append(this_ds)
 
     print(f"Loaded {len(tile_stacks)} individual tiles. Combining by coordinates.")
 
