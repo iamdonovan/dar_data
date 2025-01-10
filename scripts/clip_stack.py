@@ -1,3 +1,4 @@
+#!/usr/bin/env ipython
 from pathlib import Path
 from unidecode import unidecode
 import numpy as np
