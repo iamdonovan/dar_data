@@ -9,8 +9,8 @@ from glob import glob
 from tools import tools
 
 
-def pct_valid(arr, mask):
-    return 100 * np.count_nonzero(np.isfinite(arr[mask])) / np.count_nonzero(mask)
+def pct_valid(arr, aoi_mask):
+    return 100 * np.count_nonzero(np.isfinite(arr[aoi_mask])) / np.count_nonzero(aoi_mask)
 
 
 min_cover = 60 # only keep days when at least this % of each basin is covered
@@ -51,7 +51,6 @@ for name in basins['name']:
                                             input_core_dims=[['y', 'x']],
                                             vectorize=True,
                                             kwargs={'mask': mask})
-
 
     merged = merged.where(merged['pct_coverage'] > min_cover, drop=True)
     merged = merged.rio.reproject(4326)
