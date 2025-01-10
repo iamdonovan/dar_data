@@ -280,7 +280,7 @@ def reproject_stack(fn_stack: Union[str, Path, xr.Dataset], crs: Any) -> xr.Data
     return ds.rio.reproject(crs)
 
 
-def download_basin(name: str, ds_name: str, data_directory: Union[str, Path] = '.') -> None:
+def download_basin(name: str, ds_name: str, data_directory: Union[str, Path] = '.', kwargs: dict = {}) -> None:
     """
     Download all data from a given EarthData dataset that intersects a basin of a given name,
     using the file basins.gpkg.
@@ -288,16 +288,18 @@ def download_basin(name: str, ds_name: str, data_directory: Union[str, Path] = '
     :param name: the name of the basin to use to search for data
     :param ds_name: the name of the EarthData dataset to search and download
     :param data_directory: the name of the directory to download the files to
+    :param kwargs: additional keyword arguments to pass to earthaccess.search_data
     """
     basins = gpd.read_file('../basins.gpkg').set_index('name')
     basin = basins.loc[name, 'geometry']
 
-    download_from_extent(basin, ds_name, Path(data_directory, unidecode(name)))
+    download_from_extent(basin, ds_name, Path(data_directory, unidecode(name)), kwargs=kwargs)
 
 
 def download_from_extent(geom: shapely.geometry.Polygon,
                          ds_name: str,
-                         data_directory: Union[str, Path] = '.') -> None:
+                         data_directory: Union[str, Path] = '.',
+                         kwargs: dict = {}) -> None:
     """
     Given a geometric representation of a search area, download all granules from an EarthData dataset that intersect
     that geometry.
@@ -305,6 +307,7 @@ def download_from_extent(geom: shapely.geometry.Polygon,
     :param geom: a shapely polygon representing the search area (with latitude/longitude coordinates)
     :param ds_name: the name of the EarthData dataset to search and download
     :param data_directory: the name of the directory to download the files to
+    :param kwargs: additional keyword arguments to pass to earthaccess.search_data
     """
     search_area = shapely.geometry.polygon.orient(geom.minimum_rotated_rectangle, sign=1)
 
@@ -312,7 +315,8 @@ def download_from_extent(geom: shapely.geometry.Polygon,
 
     results = earthaccess.search_data(
         short_name=ds_name,
-        polygon=search_area.exterior.coords
+        polygon=search_area.exterior.coords,
+        **kwargs
     )
 
     earthaccess.download(
