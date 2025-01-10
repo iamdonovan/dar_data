@@ -1,8 +1,11 @@
 #!/usr/bin/env ipython
-from tools import tools
+import os
+from pathlib import Path
 from glob import glob
+from tools import tools
 
 
+os.makedirs('stacks', exist_ok=True)
 datasets = ['MOD10A1F', 'MYD10A1F', 'VJ110A1F', 'VNP10A1F']
 
 for dataset in datasets:
@@ -12,4 +15,5 @@ for dataset in datasets:
 
     for tile in tiles:
         for year in years:
-            tools.stack_data(f"{dataset}_{tile}_{year}.nc", dir_name=dataset, globstr=f"*.A{year}*.{tile}.*.hdf")
+            tools.stack_data(Path('stacks', f"{dataset}_{tile}_{year}.nc"),
+                             dir_name=dataset, globstr=f"*.A{year}*.{tile}.*.hdf")
