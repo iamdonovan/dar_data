@@ -50,7 +50,7 @@ for name in basins['name']:
     merged['pct_coverage'] = xr.apply_ufunc(pct_valid, merged['snow_cover'],
                                             input_core_dims=[['y', 'x']],
                                             vectorize=True,
-                                            kwargs={'mask': mask})
+                                            kwargs={'aoi_mask': mask})
 
     merged = merged.where(merged['pct_coverage'] > min_cover, drop=True)
     merged = merged.rio.reproject(4326)
