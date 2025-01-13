@@ -323,3 +323,29 @@ def download_from_extent(geom: shapely.geometry.Polygon,
         results,
         Path(data_directory, ds_name)
     )
+
+
+def _pct_valid(arr, aoi_mask):
+    return 100 * np.count_nonzero(np.isfinite(arr[aoi_mask])) / np.count_nonzero(aoi_mask)
+
+
+def filter_stack(ds: xr.Dataset,
+                 threshold: Union[float, int],
+                 aoi_mask: np.typing.ArrayLike = None) -> xr.Dataset:
+    """
+    Filter a snowcover stack based on the % of valid pixels inside of the AOI.
+
+    :param ds: The stack to filter.
+    :param threshold: The threshold to use for filtering. Timestamps with (% coverage <= threshold) will be dropped.
+    :param aoi_mask: (optional) AOI mask to use. Defaults to entire (x, y) dimension of raster.
+    :return: the filtered dataset
+    """
+    if aoi_mask is None:
+        aoi_mask = np.isfinite(np.ones(ds['snow_cover'][0].shape))
+
+    ds['pct_coverage'] = xr.apply_ufunc(ds, ds['snow_cover'],
+                                        input_core_dims=[['y', 'x']],
+                                        vectorize=True,
+                                        kwargs={'aoi_mask': aoi_mask})
+
+    return ds.where(ds['pct_coverage'] >= threshold, drop=True)
