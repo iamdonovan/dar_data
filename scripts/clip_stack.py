@@ -9,10 +9,6 @@ from glob import glob
 from tools import tools
 
 
-def pct_valid(arr, aoi_mask):
-    return 100 * np.count_nonzero(np.isfinite(arr[aoi_mask])) / np.count_nonzero(aoi_mask)
-
-
 min_cover = 60 # only keep days when at least this % of each basin is covered
 
 sin_crs = tools.sin_proj().to_proj4()
@@ -47,12 +43,7 @@ for name in basins['name']:
     _mask.data = np.ones(_mask.data.shape)
     mask = np.isfinite(_mask.rio.clip(basin.geometry, drop=False))
 
-    merged['pct_coverage'] = xr.apply_ufunc(pct_valid, merged['snow_cover'],
-                                            input_core_dims=[['y', 'x']],
-                                            vectorize=True,
-                                            kwargs={'aoi_mask': mask})
-
-    merged = merged.where(merged['pct_coverage'] > min_cover, drop=True)
+    merged = tools.filter_stack(merged, threshold=min_cover, aoi_mask=mask)
     merged = merged.rio.reproject(4326)
 
     merged.to_netcdf('tmp.nc', encoding={'snow_cover': {'zlib': True},
