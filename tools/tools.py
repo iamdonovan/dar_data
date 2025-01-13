@@ -343,7 +343,7 @@ def filter_stack(ds: xr.Dataset,
     if aoi_mask is None:
         aoi_mask = np.isfinite(np.ones(ds['snow_cover'][0].shape))
 
-    ds['pct_coverage'] = xr.apply_ufunc(ds, ds['snow_cover'],
+    ds['pct_coverage'] = xr.apply_ufunc(_pct_valid, ds['snow_cover'],
                                         input_core_dims=[['y', 'x']],
                                         vectorize=True,
                                         kwargs={'aoi_mask': aoi_mask})
