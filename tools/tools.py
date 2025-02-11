@@ -1,5 +1,6 @@
 import os
 import re
+import gc
 from typing import Any, Union
 from glob import glob
 from pathlib import Path
@@ -124,7 +125,7 @@ def _load_data(fn_data: Union[str, Path]) -> xr.Dataset:
         snow_cover = _snow_cover(grid_names, ds)
         data['snow_cover'] = (['time', 'y', 'x'], np.expand_dims(snow_cover, axis=0))
 
-        cgf_snow = ds['CGF_NDSI_Snow_Cover'].values.astype(np.uint8)
+        cgf_snow = ds['CGF_NDSI_Snow_Cover'].fillna(255).values.astype(np.uint8)
         cgf_snow[cgf_snow > 100] = 255
         data['cgf_snow_cover'] = (['time', 'y', 'x'], np.expand_dims(cgf_snow, axis=0))
 
@@ -201,15 +202,27 @@ def _load_data(fn_data: Union[str, Path]) -> xr.Dataset:
     return out_ds
 
 
-def stack_data(fn_out: Union[str, Path], dir_name: Union[str, Path]) -> None:
+def stack_data(fn_out: Union[str, Path],
+               dir_name: Union[str, Path],
+               globstr: str = None,
+               gran_list: Any = None) -> None:
     """
     Given a directory name, load all available NASA snow cover datasets into a single stack, and write the stack to
     disk.
 
     :param fn_out: the name of the output file to write
     :param dir_name: the name of the directory to search for datasets
+    :param globstr: (optional) search string to use to find granules. defaults to *.hdf and *.h5
+    :param gran_list: (optional) list of granules to load
     """
-    gran_list = sorted(glob('*.hdf', root_dir=dir_name)) + sorted(glob('*.h5', root_dir=dir_name))
+    if gran_list is None:
+        if globstr is None:
+            gran_list = (sorted(glob('*.hdf', root_dir=dir_name)) +
+                         sorted(glob('*.h5', root_dir=dir_name)))
+        else:
+            gran_list = sorted(glob(globstr, root_dir=dir_name))
+    print(f"Found {len(gran_list)} tiles to stack.")
+
     dataset = [os.path.basename(fn).split('.')[0] for fn in gran_list]
     tile_list = [os.path.basename(fn).split('.')[2] for fn in gran_list]
 
@@ -219,14 +232,35 @@ def stack_data(fn_out: Union[str, Path], dir_name: Union[str, Path]) -> None:
     for (sens, tile), grans in granules.groupby(['dataset', 'tile']):
         this_stack = [_load_data(Path(dir_name, fn)) for fn in grans['granule']]
         this_ds = xr.concat(this_stack, 'time')
+
+        # reproject the stack to the given CRS
         tile_stacks.append(this_ds)
+
+    print(f"Loaded {len(tile_stacks)} individual tiles. Combining by coordinates.")
 
     final_stack = xr.combine_by_coords(tile_stacks)
 
     final_stack['snow_cover'].rio.write_nodata(255, inplace=True)
     final_stack['cgf_snow_cover'].rio.write_nodata(255, inplace=True)
 
-    final_stack.to_netcdf(fn_out)
+    # save the reprojected stack to a file by compressing the snow cover variables
+    final_stack.to_netcdf('tmp.nc', encoding={'snow_cover': {'zlib': True},
+                                              'cgf_snow_cover': {'zlib': True}})
+    del final_stack, tile_stacks
+    gc.collect()
+
+    print("Saving final NetCDF file.")
+
+    # have to do this in two parts, because using encoding somehow breaks writing the CRS variable
+    ds = xr.open_dataset('tmp.nc', decode_coords='all')
+    ds.rio.write_crs(ds.spatial_ref.crs_wkt, inplace=True)
+    ds.to_netcdf(fn_out)
+
+    print("Cleaning up.")
+    # clean up the temporary file
+    os.remove('tmp.nc')
+
+    print("Finished.")
 
 
 def reproject_stack(fn_stack: Union[str, Path, xr.Dataset], crs: Any) -> xr.Dataset:
@@ -239,13 +273,14 @@ def reproject_stack(fn_stack: Union[str, Path, xr.Dataset], crs: Any) -> xr.Data
     """
     if isinstance(fn_stack, (str, Path)):
         ds = xr.open_dataset(fn_stack, decode_coords='all')
+        ds = ds.rio.write_crs(ds.spatial_ref.crs_wkt)
     else:
         ds = fn_stack
 
     return ds.rio.reproject(crs)
 
 
-def download_basin(name: str, ds_name: str, data_directory: Union[str, Path] = '.') -> None:
+def download_basin(name: str, ds_name: str, data_directory: Union[str, Path] = '.', kwargs: dict = {}) -> None:
     """
     Download all data from a given EarthData dataset that intersects a basin of a given name,
     using the file basins.gpkg.
@@ -253,16 +288,18 @@ def download_basin(name: str, ds_name: str, data_directory: Union[str, Path] = '
     :param name: the name of the basin to use to search for data
     :param ds_name: the name of the EarthData dataset to search and download
     :param data_directory: the name of the directory to download the files to
+    :param kwargs: additional keyword arguments to pass to earthaccess.search_data
     """
     basins = gpd.read_file('../basins.gpkg').set_index('name')
     basin = basins.loc[name, 'geometry']
 
-    download_from_extent(basin, ds_name, Path(data_directory, unidecode(name)))
+    download_from_extent(basin, ds_name, Path(data_directory, unidecode(name)), kwargs=kwargs)
 
 
 def download_from_extent(geom: shapely.geometry.Polygon,
                          ds_name: str,
-                         data_directory: Union[str, Path] = '.') -> None:
+                         data_directory: Union[str, Path] = '.',
+                         kwargs: dict = {}) -> None:
     """
     Given a geometric representation of a search area, download all granules from an EarthData dataset that intersect
     that geometry.
@@ -270,6 +307,7 @@ def download_from_extent(geom: shapely.geometry.Polygon,
     :param geom: a shapely polygon representing the search area (with latitude/longitude coordinates)
     :param ds_name: the name of the EarthData dataset to search and download
     :param data_directory: the name of the directory to download the files to
+    :param kwargs: additional keyword arguments to pass to earthaccess.search_data
     """
     search_area = shapely.geometry.polygon.orient(geom.minimum_rotated_rectangle, sign=1)
 
@@ -277,10 +315,37 @@ def download_from_extent(geom: shapely.geometry.Polygon,
 
     results = earthaccess.search_data(
         short_name=ds_name,
-        polygon=search_area.exterior.coords
+        polygon=search_area.exterior.coords,
+        **kwargs
     )
 
     earthaccess.download(
         results,
         Path(data_directory, ds_name)
     )
+
+
+def _pct_valid(arr, aoi_mask):
+    return 100 * np.count_nonzero(np.isfinite(arr[aoi_mask])) / np.count_nonzero(aoi_mask)
+
+
+def filter_stack(ds: xr.Dataset,
+                 threshold: Union[float, int],
+                 aoi_mask: np.typing.ArrayLike = None) -> xr.Dataset:
+    """
+    Filter a snowcover stack based on the % of valid pixels inside of the AOI.
+
+    :param ds: The stack to filter.
+    :param threshold: The threshold to use for filtering. Timestamps with (% coverage <= threshold) will be dropped.
+    :param aoi_mask: (optional) AOI mask to use. Defaults to entire (x, y) dimension of raster.
+    :return: the filtered dataset
+    """
+    if aoi_mask is None:
+        aoi_mask = np.isfinite(np.ones(ds['snow_cover'][0].shape))
+
+    ds['pct_coverage'] = xr.apply_ufunc(_pct_valid, ds['snow_cover'],
+                                        input_core_dims=[['y', 'x']],
+                                        vectorize=True,
+                                        kwargs={'aoi_mask': aoi_mask})
+
+    return ds.where(ds['pct_coverage'] >= threshold, drop=True)
