@@ -4,6 +4,7 @@ import gc
 from typing import Any, Union
 from glob import glob
 from pathlib import Path
+import json
 import pandas as pd
 from unidecode import unidecode
 import shapely
@@ -349,3 +350,15 @@ def filter_stack(ds: xr.Dataset,
                                         kwargs={'aoi_mask': aoi_mask})
 
     return ds.where(ds['pct_coverage'] >= threshold, drop=True)
+
+
+def landsat_metadata(granule: str, data_dir: str = '.') -> dict:
+    """
+    Load metadata for a Landsat granule.
+
+    :param granule: The Landsat product ID to load (e.g., LC08_L1TP_...)
+    :param data_dir: The directory where the Landsat directory is. Defaults to current directory.
+    :return: a dict of the Landsat metadata
+    """
+    with open(Path(data_dir, granule, granule + '_MTL.json'), 'r') as f:
+        return json.load(f)
