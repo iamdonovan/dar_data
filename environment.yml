@@ -15,4 +15,5 @@ dependencies:
   - h5netcdf
   - netcdf4
   - geoutils
+  - xdem
   - fiona
