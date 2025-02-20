@@ -5,6 +5,7 @@ from typing import Any, Union
 from glob import glob
 from pathlib import Path
 import json
+import yaml
 import pandas as pd
 from unidecode import unidecode
 import shapely
@@ -362,3 +363,45 @@ def landsat_metadata(granule: str, data_dir: str = '.') -> dict:
     """
     with open(Path(data_dir, granule, granule + '_MTL.json'), 'r') as f:
         return json.load(f)
+
+
+def parse_ang_file(granule: str, data_dir: str = '.') -> dict:
+    """
+    Parse a Landsat angle coefficient file (_ANG.txt) into a dict.
+
+    :param granule: The Landsat product ID to load (e.g., LC08_L1TP_...)
+    :param data_dir: The directory where the Landsat directory is. Defaults to current directory.
+    :return: a dict of the angle coefficient file metadata
+    """
+    with open(Path(data_dir, granule, granule + '_ANG.txt'), 'r') as f:
+        raw_ang = [l.strip() for l in f.readlines()]
+
+    out_dict = dict()
+    for l in raw_ang:
+        if l == 'END':
+            continue
+        lsplit = l.split(' = ')
+        if lsplit[0] == 'GROUP':
+            this_group = lsplit[1]
+            this_dict = dict()
+        else:
+            if lsplit[0] == 'END_GROUP':
+                out_dict[this_group] = this_dict
+                continue
+            if '=' in l:
+                this_name = lsplit[0]
+                this_dict[this_name] = lsplit[1]
+            else:
+                this_dict[this_name] = this_dict[this_name] + ' ' + l
+
+    # now clean the results
+    for key in out_dict.keys():
+        this_dict = out_dict[key]
+        for _k in this_dict.keys():
+            if ',' in this_dict[_k]:
+                out_dict[key][_k] = np.array(
+                    [yaml.load(a, Loader=yaml.SafeLoader) for a in this_dict[_k].strip('(').strip(')').split(',')])
+            else:
+                out_dict[key][_k] = yaml.load(this_dict[_k], Loader=yaml.SafeLoader)
+
+    return out_dict
