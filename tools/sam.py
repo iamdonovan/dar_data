@@ -1,8 +1,9 @@
 from pathlib import Path
+from skimage.filters import threshold_otsu
 import numpy as np
 import geoutils as gu
 import xdem
-import tools
+from . import tools
 
 
 def toa_reflectance(band: int, raster: gu.Raster, metadata: dict) -> gu.Raster:
@@ -52,8 +53,16 @@ def ndsi(granule: str, data_dir: str = '.') -> gu.Raster:
     return (green - swir) / (green + swir)
 
 
-def ekstrand_corr(granule: str, bandnum: int, fn_dem, data_dir: str ='.') -> gu.Raster:
+def ekstrand_corr(granule: str, bandnum: int, fn_dem: str, data_dir: str ='.') -> gu.Raster:
+    """
+    Correct TOA Radiance for topography, using the method presented by Ekstrand (1996).
 
+    :param granule: The Landsat product ID to load (e.g., LC08_L1TP_...)
+    :param bandnum: The band number of the Landsat scene to correct
+    :param fn_dem: the filename of the DEM to use for topographic correction
+    :param data_dir: The directory where the Landsat directory is. Defaults to current directory.
+    :return: the topographically corrected TOA radiance
+    """
     metadata = tools.landsat_metadata(granule, data_dir=data_dir)
     mult = float(metadata['LANDSAT_METADATA_FILE']['LEVEL1_RADIOMETRIC_RESCALING'][f"RADIANCE_MULT_BAND_{bandnum}"])
     add = float(metadata['LANDSAT_METADATA_FILE']['LEVEL1_RADIOMETRIC_RESCALING'][f"RADIANCE_MULT_BAND_{bandnum}"])
@@ -77,7 +86,7 @@ def ekstrand_corr(granule: str, bandnum: int, fn_dem, data_dir: str ='.') -> gu.
     incidence = compute_incidence_angle(metadata, dem)
 
     # need to get k (minnaert constant)
-    kk = minnaert_const(radiance, slope, incidence)
+    kk = _minnaert_const(radiance, slope, incidence)
 
     return radiance * np.power((np.cos(zenith) / np.cos(incidence)), (kk * np.cos(incidence)))
 
@@ -110,7 +119,7 @@ def compute_incidence_angle(metadata: dict, dem: xdem.DEM) -> gu.Raster:
     return incidence
 
 
-def minnaert_const(radiance: gu.Raster, slope: gu.Raster, incidence: gu.Raster) -> float:
+def _minnaert_const(radiance: gu.Raster, slope: gu.Raster, incidence: gu.Raster) -> float:
     mask = radiance.get_mask()
     y = np.log(radiance[~mask] * np.cos(slope[~mask]))
     x = np.log(np.cos(incidence[~mask]) * np.cos(slope[~mask]))
@@ -118,3 +127,97 @@ def minnaert_const(radiance: gu.Raster, slope: gu.Raster, incidence: gu.Raster) 
     kk, b = np.polyfit(x[x < 0], y[x < 0], 1)
 
     return kk
+
+
+# TODO: implement a cloud mask using the QA bands
+def snow_map(granule, fn_dem, fn_outlines, data_dir='.', how: str = 'individual') -> None:
+    """
+    Classify glacier outlines into snow/glacier ice, using the approach by Rastner et al. (2019).
+
+    First, a topographic correction is applied to the NIR TOA Radiance (Ekstrand, 1996). Then, using the supplied
+    glacier outlines, a threshold between bright/dark pixels is chosen using the Otsu Threshold (Otsu, 1979).
+
+    :param granule: The Landsat product ID to load (e.g., LC08_L1TP_...)
+    :param fn_dem: the filename of the DEM to use for topographic correction
+    :param fn_outlines: the filename for the glacier outlines to use.
+    :param data_dir: The directory where the Landsat directory is. Defaults to current directory.
+    :param how: How to calculate the threshold: on an individual glacier basis, by glacier complex, or by scene. Must
+        be one of [individual, complex, scene]; default is individual.
+    :return:
+    """
+    assert how in ['individual', 'complex', 'scene'], "how must be one of: [individual, complex, scene]"
+
+    do_individual = how in ['individual', 'complex']
+
+    sens = granule.split('_')[0]
+    if sens in ['LT04', 'LT05', 'LE07']:
+        nir_band = 4
+    else:
+        nir_band = 5
+
+    # nir = gu.Raster(Path(data_dir, granule, '_'.join(granule, f"B{nir_band}.TIF")))
+    snow_index = ndsi(granule, data_dir)
+    vis_mask = ~snow_index.get_mask()
+
+    # get the cloud mask from the qa band
+    is_cloud = cloud_mask(granule, data_dir)
+
+    # apply the ekstrand (1996) correction to the NIR band
+    corrected_nir = ekstrand_corr(granule, nir_band, fn_dem, data_dir=data_dir)
+
+    # create a glacier mask and initialize the snow classification raster
+    outlines = gu.Vector(fn_outlines)
+    if how == 'complex':
+        outlines = outlines.dissolve().explode()
+        outlines.ds.index = range(len(outlines.ds))
+
+    rasterized = outlines.rasterize(corrected_nir)
+
+    snow_class = rasterized.copy()
+    snow_class.data[~vis_mask] = 0
+
+    # get the unique indices from the glacier mask
+    masked = np.logical_and(vis_mask, rasterized > 0)
+    unique_inds = np.unique(rasterized[masked])
+
+    # TODO: implement some kind of multiprocessing to speed this up?
+    # glacier by glacier? dissolve into complexes? treat as a single entity?
+    if do_individual:
+        for ind in unique_inds:
+            glac = rasterized == ind
+            glac_snow_ice = np.logical_and(glac,
+                                           snow_index > 0.5)
+            rad = corrected_nir[glac_snow_ice]
+            if rad.size > 0:
+                thresh = threshold_otsu(rad)
+
+                snow_class[glac] = 1
+                snow_class[glac_snow_ice & (corrected_nir > thresh)] = 2
+            else:
+                snow_class[glac] = 1
+    else:
+        glac_snow_ice = np.logical_and(masked,
+                                       snow_index > 0.5)
+        snow_class[masked] = 1
+
+        rad = corrected_nir[glac_snow_ice]
+        thresh = threshold_otsu(rad)
+
+        snow_class[glac_snow_ice & (corrected_nir > thresh)] = 2
+
+    snow_class.set_nodata(0)
+    snow_class.save(Path(data_dir, granule + '_snow.tif'))
+
+
+def cloud_mask(granule: str, data_dir: str ='.') -> gu.Raster:
+    """
+    Apply the QA_PIXEL cloud mask to a Landsat image.
+
+    :param granule: The Landsat product ID to load (e.g., LC08_L1TP_...)
+    :param data_dir: The directory where the Landsat directory is. Defaults to current directory.
+    :return: a logical mask with True values where any of the QA cloud pixels has been set.
+    """
+    qa_band = gu.Raster(Path(data_dir, granule, f"{granule}_QA_PIXEL.TIF"))
+    cloud_flag = int('11111', 2) * np.ones_like(qa_band.data)
+
+    return np.bitwise_and(qa_band, cloud_flag) != 0
