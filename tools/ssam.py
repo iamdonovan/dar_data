@@ -21,6 +21,21 @@ def toa_reflectance(band: int, raster: gu.Raster, metadata: dict) -> gu.Raster:
     return raster
 
 
+def toa_radiance(band: int, raster: gu.Raster, metadata: dict) -> gu.Raster:
+    """
+    Convert a Landsat band to TOA radiance.
+
+    :param band: the band number to convert
+    :param raster: a gu.Raster of the Landsat band
+    :param metadata: a dict of the Landsat metadata
+    :return: the raster, converted to TOA radiance
+    """
+    raster *= float(metadata['LANDSAT_METADATA_FILE']['LEVEL1_RADIOMETRIC_RESCALING'][f"RADIANCE_MULT_BAND_{band}"])
+    raster += float(metadata['LANDSAT_METADATA_FILE']['LEVEL1_RADIOMETRIC_RESCALING'][f"RADIANCE_ADD_BAND_{band}"])
+
+    return raster
+
+
 def ndsi(granule: str, data_dir: str = '.') -> gu.Raster:
     """
     Calculate the normalized difference snow and ice index (NDSI) for a Landsat scene, using the formula:
@@ -64,11 +79,9 @@ def ekstrand_corr(granule: str, bandnum: int, fn_dem: str, data_dir: str ='.') -
     :return: the topographically corrected TOA radiance
     """
     metadata = tools.landsat_metadata(granule, data_dir=data_dir)
-    mult = float(metadata['LANDSAT_METADATA_FILE']['LEVEL1_RADIOMETRIC_RESCALING'][f"RADIANCE_MULT_BAND_{bandnum}"])
-    add = float(metadata['LANDSAT_METADATA_FILE']['LEVEL1_RADIOMETRIC_RESCALING'][f"RADIANCE_MULT_BAND_{bandnum}"])
 
     band = gu.Raster(Path(data_dir, granule, '_'.join([granule, f"B{bandnum}.TIF"])))
-    radiance = band * mult + add
+    radiance = toa_radiance(bandnum, band, metadata)
 
     # have to prepare the dem and a hillshade
     # reproject to landsat crs, resolution
@@ -76,11 +89,9 @@ def ekstrand_corr(granule: str, bandnum: int, fn_dem: str, data_dir: str ='.') -
     dem = dem.reproject(band)
 
     slope = dem.slope()
-    aspect = dem.aspect()
 
-    # use landsat metadata for solar zenith, azimuth
+    # use landsat metadata for solar zenith
     zenith = np.deg2rad(90 - float(metadata['LANDSAT_METADATA_FILE']['IMAGE_ATTRIBUTES']['SUN_ELEVATION']))
-    azimuth = np.deg2rad(float(metadata['LANDSAT_METADATA_FILE']['IMAGE_ATTRIBUTES']['SUN_AZIMUTH']))
 
     # calculate the solar incidence angle
     incidence = compute_incidence_angle(metadata, dem)
@@ -185,8 +196,12 @@ def snow_map(granule, fn_dem, fn_outlines, data_dir='.', how: str = 'individual'
     if do_individual:
         for ind in unique_inds:
             glac = rasterized == ind
-            glac_snow_ice = np.logical_and(glac,
-                                           snow_index > 0.5)
+
+            if np.count_nonzero(is_cloud[glac]) / np.count_nonzero(glac) > 0.1:
+                snow_class[glac] = 0
+                continue
+
+            glac_snow_ice = np.logical_and(glac, snow_index > 0.5)
             rad = corrected_nir[glac_snow_ice]
             if rad.size > 0:
                 thresh = threshold_otsu(rad)
@@ -194,14 +209,14 @@ def snow_map(granule, fn_dem, fn_outlines, data_dir='.', how: str = 'individual'
                 snow_class[glac] = 1
                 snow_class[glac_snow_ice & (corrected_nir > thresh)] = 2
             else:
-                snow_class[glac] = 1
+                snow_class[glac] = 0
     else:
-        glac_snow_ice = np.logical_and(masked,
-                                       snow_index > 0.5)
+        glac_snow_ice = np.logical_and(masked, snow_index > 0.6)
         snow_class[masked] = 1
 
         rad = corrected_nir[glac_snow_ice]
         thresh = threshold_otsu(rad)
+        print(f"Chosen radiance threshold: {thresh:.2f}")
 
         snow_class[glac_snow_ice & (corrected_nir > thresh)] = 2
 
@@ -218,6 +233,6 @@ def cloud_mask(granule: str, data_dir: str ='.') -> gu.Raster:
     :return: a logical mask with True values where any of the QA cloud pixels has been set.
     """
     qa_band = gu.Raster(Path(data_dir, granule, f"{granule}_QA_PIXEL.TIF"))
-    cloud_flag = int('11111', 2) * np.ones_like(qa_band.data)
+    cloud_flag = int('1100011111', 2) * np.ones_like(qa_band.data)
 
-    return np.bitwise_and(qa_band, cloud_flag) != 0
+    return np.bitwise_and(qa_band, cloud_flag) > 512
