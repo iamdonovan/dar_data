@@ -6,24 +6,30 @@ import xdem
 from . import tools
 
 
-def toa_reflectance(band: int, raster: gu.Raster, metadata: dict) -> gu.Raster:
+def to_reflectance(band: int, raster: gu.Raster, metadata: dict, is_sr: bool = False) -> gu.Raster:
     """
-    Convert a Landsat band to TOA reflectance.
+    Rescale a Landsat band to TOA reflectance, or to surface reflectance.
 
     :param band: the band number to convert
     :param raster: a gu.Raster of the Landsat band
     :param metadata: a dict of the Landsat metadata
-    :return: the raster, converted to TOA reflectance
+    :param is_sr: whether the metadata is for the L2 surface reflectance product
+    :return: the raster, converted to either TOA reflectance, or surface reflectance
     """
-    raster *= float(metadata['LANDSAT_METADATA_FILE']['LEVEL1_RADIOMETRIC_RESCALING'][f"REFLECTANCE_MULT_BAND_{band}"])
-    raster += float(metadata['LANDSAT_METADATA_FILE']['LEVEL1_RADIOMETRIC_RESCALING'][f"REFLECTANCE_ADD_BAND_{band}"])
+    if not is_sr:
+        meta = metadata['LANDSAT_METADATA_FILE']['LEVEL1_RADIOMETRIC_RESCALING']
+    else:
+        meta = metadata['LANDSAT_METADATA_FILE']['LEVEL2_SURFACE_REFLECTANCE_PARAMETERS']
+
+    raster *= float(meta[f"REFLECTANCE_MULT_BAND_{band}"])
+    raster += float(meta[f"REFLECTANCE_ADD_BAND_{band}"])
 
     return raster
 
 
-def toa_radiance(band: int, raster: gu.Raster, metadata: dict) -> gu.Raster:
+def to_radiance(band: int, raster: gu.Raster, metadata: dict) -> gu.Raster:
     """
-    Convert a Landsat band to TOA radiance.
+    Rescale a Landsat band to TOA radiance.
 
     :param band: the band number to convert
     :param raster: a gu.Raster of the Landsat band
@@ -62,8 +68,8 @@ def ndsi(granule: str, data_dir: str = '.') -> gu.Raster:
     swir = gu.Raster(Path(data_dir, granule, '_'.join([granule, f"B{swir_band}.TIF"])))
     green = gu.Raster(Path(data_dir, granule, '_'.join([granule, f"B{green_band}.TIF"])))
 
-    swir = toa_reflectance(swir_band, swir, metadata)
-    green = toa_reflectance(green_band, green, metadata)
+    swir = to_reflectance(swir_band, swir, metadata)
+    green = to_reflectance(green_band, green, metadata)
 
     return (green - swir) / (green + swir)
 
@@ -81,7 +87,7 @@ def ekstrand_corr(granule: str, bandnum: int, fn_dem: str, data_dir: str ='.') -
     metadata = tools.landsat_metadata(granule, data_dir=data_dir)
 
     band = gu.Raster(Path(data_dir, granule, '_'.join([granule, f"B{bandnum}.TIF"])))
-    radiance = toa_radiance(bandnum, band, metadata)
+    radiance = to_radiance(bandnum, band, metadata)
 
     # have to prepare the dem and a hillshade
     # reproject to landsat crs, resolution
