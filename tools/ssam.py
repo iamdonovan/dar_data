@@ -7,6 +7,8 @@ from typing import Union
 from . import tools
 
 
+np.seterr(divide='ignore', invalid='ignore')
+
 def to_reflectance(band: int, raster: gu.Raster, metadata: dict, is_sr: bool = False) -> gu.Raster:
     """
     Rescale a Landsat band to TOA reflectance, or to surface reflectance.
@@ -66,8 +68,8 @@ def ndsi(granule: str, data_dir: str = '.') -> gu.Raster:
         swir_band = 6
         green_band = 3
 
-    swir = gu.Raster(Path(data_dir, granule, '_'.join([granule, f"B{swir_band}.TIF"])))
-    green = gu.Raster(Path(data_dir, granule, '_'.join([granule, f"B{green_band}.TIF"])))
+    swir = gu.Raster(Path(data_dir, granule, '_'.join([granule, f"B{swir_band}.TIF"]))).astype(np.float64)
+    green = gu.Raster(Path(data_dir, granule, '_'.join([granule, f"B{green_band}.TIF"]))).astype(np.float64)
 
     swir = to_reflectance(swir_band, swir, metadata)
     green = to_reflectance(green_band, green, metadata)
@@ -227,16 +229,17 @@ def snow_map(granule, fn_dem, fn_outlines, data_dir='.', how: str = 'individual'
 
     rasterized = outlines.rasterize(corrected_nir)
 
-    snow_class = rasterized.copy()
-    snow_class.data[~vis_mask] = 0
+    snow_class = rasterized.copy(new_array=np.ones_like(rasterized.data))
+    snow_class.set_nodata(0)
 
     # get the unique indices from the glacier mask
-    masked = np.logical_and(vis_mask, rasterized > 0)
+    masked = vis_mask & (rasterized > 0)
     unique_inds = np.unique(rasterized[masked])
+
+    snow_class[~masked] = 0
 
     # TODO: implement some kind of multiprocessing to speed this up?
     glac_snow_ice = masked & (snow_index > 0.6) & (~is_cloud)
-    snow_class[masked] = 1
 
     rad = corrected_nir[glac_snow_ice]
     glob_thresh = threshold_otsu(rad * 100) / 100
@@ -266,7 +269,6 @@ def snow_map(granule, fn_dem, fn_outlines, data_dir='.', how: str = 'individual'
     else:
         snow_class[masked & (corrected_nir > glob_thresh)] = 2
 
-    snow_class.set_nodata(0)
     snow_class.save(Path(data_dir, granule + f"_{how}_snow.tif"))
 
     if return_rast:
