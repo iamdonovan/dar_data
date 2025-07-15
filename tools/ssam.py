@@ -239,7 +239,10 @@ def snow_map(granule, fn_dem, fn_outlines, data_dir='.', how: str = 'individual'
     snow_class[~masked] = 0
 
     # TODO: implement some kind of multiprocessing to speed this up?
-    glac_snow_ice = masked & (snow_index > 0.6) & (~is_cloud)
+    glac_snow_ice = masked & (snow_index > 0.5) & (~is_cloud)
+
+    if np.count_nonzero(glac_snow_ice) / np.count_nonzero(masked) < 0.1:
+        raise ValueError("Not enough valid on-glacier pixels found.")
 
     rad = corrected_nir[glac_snow_ice]
     glob_thresh = threshold_otsu(rad * 100) / 100
@@ -269,6 +272,7 @@ def snow_map(granule, fn_dem, fn_outlines, data_dir='.', how: str = 'individual'
     else:
         snow_class[masked & (corrected_nir > glob_thresh)] = 2
 
+    snow_class[is_cloud] = 0
     snow_class.save(Path(data_dir, granule + f"_{how}_snow.tif"))
 
     if return_rast:
@@ -289,4 +293,4 @@ def cloud_mask(granule: str, data_dir: str ='.') -> gu.Raster:
     ## cloud flags are bits 1, 2, 3; confidence flags are 8-11
     cloud_flag = int('1111', 2) * np.ones_like(qa_band.data)
 
-    return np.bitwise_and(qa_band, cloud_flag) > 0
+    return np.bitwise_and(qa_band, cloud_flag) > 2
