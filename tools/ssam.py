@@ -235,23 +235,23 @@ def snow_map(granule, fn_dem, fn_outlines, data_dir='.', how: str = 'individual'
     unique_inds = np.unique(rasterized[masked])
 
     # TODO: implement some kind of multiprocessing to speed this up?
-    glac_snow_ice = np.logical_and(masked, snow_index > 0.6)
+    glac_snow_ice = masked & (snow_index > 0.6) & (~is_cloud)
     snow_class[masked] = 1
 
     rad = corrected_nir[glac_snow_ice]
     glob_thresh = threshold_otsu(rad * 100) / 100
-    print(f"Scene-wide radiance threshold: {glob_thresh:.3f}")
+    print(f"Scene-wide reflectance threshold: {glob_thresh:.3f}")
 
     # glacier by glacier? dissolve into complexes? treat as a single entity?
     if do_individual:
         for ind in unique_inds:
             glac = rasterized == ind
 
-            if np.count_nonzero(is_cloud[glac]) / np.count_nonzero(glac) > 0.25:
+            if np.count_nonzero(is_cloud[glac]) / np.count_nonzero(glac) > 0.4:
                 snow_class[glac] = 0
                 continue
 
-            glac_snow_ice = np.logical_and(glac, snow_index > 0.5)
+            glac_snow_ice = masked & (snow_index > 0.6) & (~is_cloud)
             rad = corrected_nir[glac_snow_ice]
             if rad.size > 0:
                 if np.count_nonzero(rad > glob_thresh) / rad.size > 0.1:
@@ -260,7 +260,7 @@ def snow_map(granule, fn_dem, fn_outlines, data_dir='.', how: str = 'individual'
                     thresh = glob_thresh
 
                 snow_class[glac] = 1
-                snow_class[glac_snow_ice & (corrected_nir > thresh)] = 2
+                snow_class[masked & (snow_index > 0.6) & (corrected_nir > thresh)] = 2
             else:
                 snow_class[glac] = 0
     else:
