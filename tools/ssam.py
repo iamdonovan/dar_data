@@ -260,11 +260,11 @@ def snow_map(granule, fn_dem, fn_outlines, data_dir='.', how: str = 'individual'
                     thresh = glob_thresh
 
                 snow_class[glac] = 1
-                snow_class[masked & (snow_index > 0.6) & (corrected_nir > thresh)] = 2
+                snow_class[masked & (corrected_nir > thresh)] = 2
             else:
                 snow_class[glac] = 0
     else:
-        snow_class[glac_snow_ice & (corrected_nir > glob_thresh)] = 2
+        snow_class[masked & (corrected_nir > glob_thresh)] = 2
 
     snow_class.set_nodata(0)
     snow_class.save(Path(data_dir, granule + f"_{how}_snow.tif"))
