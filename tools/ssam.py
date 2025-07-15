@@ -3,6 +3,7 @@ from skimage.filters import threshold_otsu
 import numpy as np
 import geoutils as gu
 import xdem
+from typing import Union
 from . import tools
 
 
@@ -180,7 +181,8 @@ def corrected_toa(granule: str, bandnum: int, fn_dem: str, data_dir: str ='.') -
 
 
 # TODO: implement a cloud mask using the QA bands
-def snow_map(granule, fn_dem, fn_outlines, data_dir='.', how: str = 'individual') -> None:
+def snow_map(granule, fn_dem, fn_outlines, data_dir='.', how: str = 'individual',
+             return_rast: bool = False) -> Union[None, gu.Raster]:
     """
     Classify glacier outlines into snow/glacier ice, using the approach by Rastner et al. (2019).
 
@@ -193,7 +195,8 @@ def snow_map(granule, fn_dem, fn_outlines, data_dir='.', how: str = 'individual'
     :param data_dir: The directory where the Landsat directory is. Defaults to current directory.
     :param how: How to calculate the threshold: on an individual glacier basis, by glacier complex, or by scene. Must
         be one of [individual, complex, scene]; default is individual.
-    :return:
+    :param return_rast: whether or not to return the raster after saving it.
+    :return: None, or the snow map raster (if return_rast is True)
     """
     assert how in ['individual', 'complex', 'scene'], "how must be one of: [individual, complex, scene]"
 
@@ -213,7 +216,8 @@ def snow_map(granule, fn_dem, fn_outlines, data_dir='.', how: str = 'individual'
     is_cloud = cloud_mask(granule, data_dir)
 
     # apply the ekstrand (1996) correction to the NIR band
-    corrected_nir = ekstrand_corr(granule, nir_band, fn_dem, data_dir=data_dir)
+    #corrected_nir = ekstrand_corr(granule, nir_band, fn_dem, data_dir=data_dir)
+    corrected_nir = corrected_toa(granule, nir_band, fn_dem, data_dir=data_dir)
 
     # create a glacier mask and initialize the snow classification raster
     outlines = gu.Vector(fn_outlines)
@@ -231,36 +235,44 @@ def snow_map(granule, fn_dem, fn_outlines, data_dir='.', how: str = 'individual'
     unique_inds = np.unique(rasterized[masked])
 
     # TODO: implement some kind of multiprocessing to speed this up?
+    glac_snow_ice = np.logical_and(masked, snow_index > 0.6)
+    snow_class[masked] = 1
+
+    rad = corrected_nir[glac_snow_ice]
+    glob_thresh = threshold_otsu(rad * 100) / 100
+    print(f"Scene-wide radiance threshold: {glob_thresh:.3f}")
+
     # glacier by glacier? dissolve into complexes? treat as a single entity?
     if do_individual:
         for ind in unique_inds:
             glac = rasterized == ind
 
-            if np.count_nonzero(is_cloud[glac]) / np.count_nonzero(glac) > 0.1:
+            if np.count_nonzero(is_cloud[glac]) / np.count_nonzero(glac) > 0.25:
                 snow_class[glac] = 0
                 continue
 
             glac_snow_ice = np.logical_and(glac, snow_index > 0.5)
             rad = corrected_nir[glac_snow_ice]
             if rad.size > 0:
-                thresh = threshold_otsu(rad)
+                if np.count_nonzero(rad > glob_thresh) / rad.size > 0.1:
+                    thresh = threshold_otsu(rad * 100) / 100
+                else:
+                    thresh = glob_thresh
 
                 snow_class[glac] = 1
                 snow_class[glac_snow_ice & (corrected_nir > thresh)] = 2
             else:
                 snow_class[glac] = 0
     else:
-        glac_snow_ice = np.logical_and(masked, snow_index > 0.6)
-        snow_class[masked] = 1
-
-        rad = corrected_nir[glac_snow_ice]
-        thresh = threshold_otsu(rad)
-        print(f"Chosen radiance threshold: {thresh:.2f}")
-
-        snow_class[glac_snow_ice & (corrected_nir > thresh)] = 2
+        snow_class[glac_snow_ice & (corrected_nir > glob_thresh)] = 2
 
     snow_class.set_nodata(0)
-    snow_class.save(Path(data_dir, granule + '_snow.tif'))
+    snow_class.save(Path(data_dir, granule + f"_{how}_snow.tif"))
+
+    if return_rast:
+        return snow_class
+    else:
+        return None
 
 
 def cloud_mask(granule: str, data_dir: str ='.') -> gu.Raster:
@@ -272,6 +284,7 @@ def cloud_mask(granule: str, data_dir: str ='.') -> gu.Raster:
     :return: a logical mask with True values where any of the QA cloud pixels has been set.
     """
     qa_band = gu.Raster(Path(data_dir, granule, f"{granule}_QA_PIXEL.TIF"))
-    cloud_flag = int('1100011111', 2) * np.ones_like(qa_band.data)
+    ## cloud flags are bits 1, 2, 3; confidence flags are 8-11
+    cloud_flag = int('1111', 2) * np.ones_like(qa_band.data)
 
-    return np.bitwise_and(qa_band, cloud_flag) > 512
+    return np.bitwise_and(qa_band, cloud_flag) > 0
