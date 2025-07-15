@@ -97,7 +97,7 @@ def ekstrand_corr(granule: str, bandnum: int, fn_dem: str, data_dir: str ='.') -
     slope = dem.slope()
 
     # use landsat metadata for solar zenith
-    zenith = np.deg2rad(90 - float(metadata['LANDSAT_METADATA_FILE']['IMAGE_ATTRIBUTES']['SUN_ELEVATION']))
+    zenith = _solar_zenith(metadata)
 
     # calculate the solar incidence angle
     incidence = compute_incidence_angle(metadata, dem)
@@ -136,6 +136,10 @@ def compute_incidence_angle(metadata: dict, dem: xdem.DEM) -> gu.Raster:
     return incidence
 
 
+def _solar_zenith(metadata):
+    return np.deg2rad(90 - float(metadata['LANDSAT_METADATA_FILE']['IMAGE_ATTRIBUTES']['SUN_ELEVATION']))
+
+
 def _minnaert_const(radiance: gu.Raster, slope: gu.Raster, incidence: gu.Raster) -> float:
     mask = radiance.get_mask()
     y = np.log(radiance[~mask] * np.cos(slope[~mask]))
@@ -144,6 +148,35 @@ def _minnaert_const(radiance: gu.Raster, slope: gu.Raster, incidence: gu.Raster)
     kk, b = np.polyfit(x[x < 0], y[x < 0], 1)
 
     return kk
+
+
+def corrected_toa(granule: str, bandnum: int, fn_dem: str, data_dir: str ='.') -> gu.Raster:
+    """
+    Correct TOA reflectance for topography. First computes the corrected radiance using the method
+    presented by Ekstrand (1996), then computes the TOA reflectance using the formula:
+
+        toa_refl = pi * radiance * dist**2 / (irradiance * cos(zenith))
+
+    where dist is the Earth-Sun distance in AU, irradiance is the average solar irradiance for the band, and
+    zenith is the solar zenith angle.
+
+    :param granule: The Landsat product ID to load (e.g., LC08_L1TP_...)
+    :param bandnum: The band number of the Landsat scene to correct
+    :param fn_dem: the filename of the DEM to use for topographic correction
+    :param data_dir: The directory where the Landsat directory is. Defaults to current directory.
+    :return: the topographically corrected TOA reflectance
+    """
+    metadata = tools.landsat_metadata(granule, data_dir=data_dir)
+    sensor = granule.split('_')[0]
+
+    radiance = ekstrand_corr(granule, bandnum, fn_dem, data_dir)
+
+    zenith = _solar_zenith(metadata)
+    dist = float(metadata['LANDSAT_METADATA_FILE']['IMAGE_ATTRIBUTES']['EARTH_SUN_DISTANCE'])
+
+    irradiance = tools.solar_irradiance(bandnum, sensor)
+
+    return np.pi * radiance * dist**2 / (irradiance * np.cos(zenith))
 
 
 # TODO: implement a cloud mask using the QA bands

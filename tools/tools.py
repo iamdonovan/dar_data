@@ -365,6 +365,25 @@ def landsat_metadata(granule: str, data_dir: str = '.') -> dict:
         return json.load(f)
 
 
+def solar_irradiance(band: int, sensor: str) -> float:
+    """
+    Get the average solar irradiance (in W m^-2) for a given Landsat sensor and band.
+
+    :param band: the band number
+    :param sensor: the Landsat sensor to use. Must be one of LT04, LT05, LE07, LC08, or LC09.
+    :return: the average solar irradiance
+    """
+    if sensor in ['LE07', 'LT05', 'LT04']:
+        bands = [1, 2, 3, 4, 5, 7]
+        irradiance = dict(zip(bands, [1969, 1840, 1551, 1044, 225.7, 82.07, 1368]))
+    elif sensor in ['LC08', 'LC09']:
+        bands = [2, 3, 4, 5, 6, 7]
+        irradiance = dict(zip(bands, [2067, 1893, 1603, 972.6, 245, 79.72]))
+    else:
+        raise ValueError("sensor must be one of [LT04, LT05, LE07, LC08, LC09]")
+    return irradiance[band]
+
+
 def parse_ang_file(granule: str, data_dir: str = '.') -> dict:
     """
     Parse a Landsat angle coefficient file (_ANG.txt) into a dict.
