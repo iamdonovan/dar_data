@@ -294,3 +294,32 @@ def cloud_mask(granule: str, data_dir: str ='.') -> gu.Raster:
     cloud_flag = int('1111', 2) * np.ones_like(qa_band.data)
 
     return np.bitwise_and(qa_band, cloud_flag) > 2
+
+
+def albedo(granule: str, fn_dem: str, data_dir: str = '.') -> gu.Raster:
+    """
+    Calculate the terrain-corrected TOA albedo for a given Landsat scene, using the following equation, adapted from
+    Liang, S. (2000). Remote Sens. Env. 76, 213-238:
+
+        albedo = 0.356 * blue + 0.130 * red + 0.373 * nir + 0.085 * swir1 + 0.027 * swir2 - 0.0018
+
+    :param granule: The Landsat product ID to load (e.g., LC08_L1TP_...)
+    :param fn_dem: the filename of the DEM to use for topographic correction
+    :param data_dir: The directory where the Landsat directory is. Defaults to current directory.
+    :return: the terrain-corrected TOA albedo
+    """
+    # blue, red, nir, swir1, swir2
+    coeffs = [0.356, 0.130, 0.373, 0.085, 0.072]
+
+    sens = granule.split('_')[0]
+
+    if sens in ['LT04', 'LT05', 'LE07']:
+        bands = [1, 3, 4, 5, 7]
+    else:
+        bands = [2, 4, 5, 6, 7]
+
+    corrected = []
+    for band in bands:
+        corrected.append(corrected_toa(granule, band, fn_dem, data_dir=data_dir))
+
+    return gu.Raster(sum([coeff * band for coeff, band in zip(coeffs, corrected)]) - 0.0018)
