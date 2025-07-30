@@ -184,7 +184,7 @@ def corrected_toa(granule: str, bandnum: int, fn_dem: str, data_dir: str ='.') -
 
 # TODO: implement a cloud mask using the QA bands
 def snow_map(granule, fn_dem, fn_outlines, data_dir='.', how: str = 'individual',
-             return_rast: bool = False) -> Union[None, gu.Raster]:
+             return_rast: bool = False) -> Union[None, tuple[gu.Raster, float]]:
     """
     Classify glacier outlines into snow/glacier ice, using the approach by Rastner et al. (2019).
 
@@ -198,7 +198,7 @@ def snow_map(granule, fn_dem, fn_outlines, data_dir='.', how: str = 'individual'
     :param how: How to calculate the threshold: on an individual glacier basis, by glacier complex, or by scene. Must
         be one of [individual, complex, scene]; default is individual.
     :param return_rast: whether or not to return the raster after saving it.
-    :return: None, or the snow map raster (if return_rast is True)
+    :return: None, or the snow map raster and scene-wide threshold (if return_rast is True)
     """
     assert how in ['individual', 'complex', 'scene'], "how must be one of: [individual, complex, scene]"
 
@@ -276,7 +276,7 @@ def snow_map(granule, fn_dem, fn_outlines, data_dir='.', how: str = 'individual'
     snow_class.save(Path(data_dir, granule + f"_{how}_snow.tif"))
 
     if return_rast:
-        return snow_class
+        return snow_class, glob_thresh
     else:
         return None
 
