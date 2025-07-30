@@ -253,9 +253,11 @@ def snow_map(granule, fn_dem, fn_outlines, data_dir='.', method: str = 'nir',
 
     # TODO: implement some kind of multiprocessing to speed this up?
     if method == 'nir':
-        glac_snow_ice = masked & (snow_index > 0.5) & (thresh_band > 0.1)
+        glac_snow_ice = masked & (snow_index > 0.5) & (thresh_band > 0.15)
     else:
-        glac_snow_ice = masked & (snow_index > 0.5) & (corrected_nir > 0.1)
+        glac_snow_ice = masked & (snow_index > 0.5) & (corrected_nir > 0.15)
+
+    snow_class[~glac_snow_ice] = 0
 
     if np.count_nonzero(glac_snow_ice) / np.count_nonzero(masked) < 0.1:
         raise ValueError("Not enough valid on-glacier pixels found.")
@@ -295,7 +297,6 @@ def snow_map(granule, fn_dem, fn_outlines, data_dir='.', method: str = 'nir',
     else:
         snow_class[masked & (thresh_band > glob_thresh)] = 2
 
-    snow_class[snow_index < 0.5] = 0
     snow_class.save(Path(data_dir, granule + f"_{method}_{how}_snow.tif"))
 
     if return_rast:
@@ -321,10 +322,12 @@ def cloud_mask(granule: str, data_dir: str ='.') -> gu.Raster:
 
 def albedo(granule: str, fn_dem: str, data_dir: str = '.') -> gu.Raster:
     """
-    Calculate the terrain-corrected TOA albedo for a given Landsat scene, using the following equation, adapted from
+    Calculate the terrain-corrected albedo for a given Landsat scene, using the following equation, adapted from
     Liang, S. (2000). Remote Sens. Env. 76, 213-238:
 
         albedo = 0.356 * blue + 0.130 * red + 0.373 * nir + 0.085 * swir1 + 0.027 * swir2 - 0.0018
+
+    Uses Landsat C2 L1 data, applying a dark-object subtraction to each band to help correct for atmospheric effects.
 
     :param granule: The Landsat product ID to load (e.g., LC08_L1TP_...)
     :param fn_dem: the filename of the DEM to use for topographic correction
@@ -343,6 +346,12 @@ def albedo(granule: str, fn_dem: str, data_dir: str = '.') -> gu.Raster:
 
     corrected = []
     for band in bands:
-        corrected.append(corrected_toa(granule, band, fn_dem, data_dir=data_dir))
+        corrected.append(_dark_object(corrected_toa(granule, band, fn_dem, data_dir=data_dir)))
 
     return gu.Raster(sum([coeff * band for coeff, band in zip(coeffs, corrected)]) - 0.0018)
+
+
+def _dark_object(rast: gu.Raster, p: float = 0.05) -> gu.Raster:
+    corrected = rast - np.percentile(rast, p)
+    corrected[corrected < 0] = 0.01
+    return corrected
