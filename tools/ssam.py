@@ -260,7 +260,11 @@ def snow_map(granule, fn_dem, fn_outlines, data_dir='.', method: str = 'nir',
     if np.count_nonzero(glac_snow_ice) / np.count_nonzero(masked) < 0.1:
         raise ValueError("Not enough valid on-glacier pixels found.")
 
-    rad = thresh_band[glac_snow_ice]
+    if method == 'nir':
+        rad = thresh_band[glac_snow_ice]
+    else:
+        rad = thresh_band[glac_snow_ice & (thresh_band >= 0.25) & (thresh_band <= 0.55)]
+
     glob_thresh = threshold_otsu(rad[~rad.mask])
     print(f"Scene-wide reflectance/albedo threshold: {glob_thresh:.3f}")
 
@@ -273,7 +277,11 @@ def snow_map(granule, fn_dem, fn_outlines, data_dir='.', method: str = 'nir',
                 snow_class[glac] = 0
                 continue
 
-            rad = thresh_band[glac & glac_snow_ice]
+            if method == 'nir':
+                rad = thresh_band[glac & glac_snow_ice]
+            else:
+                rad = thresh_band[glac & glac_snow_ice & (thresh_band >= 0.25) & (thresh_band <= 0.55)]
+
             if rad.size > 0:
                 if np.count_nonzero(rad > glob_thresh) / rad.size > 0.1:
                     thresh = threshold_otsu(rad[~rad.mask])
@@ -288,7 +296,7 @@ def snow_map(granule, fn_dem, fn_outlines, data_dir='.', method: str = 'nir',
         snow_class[masked & (thresh_band > glob_thresh)] = 2
 
     snow_class[snow_index < 0.5] = 0
-    snow_class.save(Path(data_dir, granule + f"{method}_{how}_snow.tif"))
+    snow_class.save(Path(data_dir, granule + f"_{method}_{how}_snow.tif"))
 
     if return_rast:
         return snow_class, glob_thresh
