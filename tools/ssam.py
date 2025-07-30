@@ -183,24 +183,28 @@ def corrected_toa(granule: str, bandnum: int, fn_dem: str, data_dir: str ='.') -
 
 
 # TODO: implement a cloud mask using the QA bands
-def snow_map(granule, fn_dem, fn_outlines, data_dir='.', how: str = 'individual',
+def snow_map(granule, fn_dem, fn_outlines, data_dir='.', method: str = 'nir',
+             how: str = 'individual',
              return_rast: bool = False) -> Union[None, tuple[gu.Raster, float]]:
     """
-    Classify glacier outlines into snow/glacier ice, using the approach by Rastner et al. (2019).
+    Classify glacier outlines into snow/glacier ice.
 
-    First, a topographic correction is applied to the NIR TOA Radiance (Ekstrand, 1996). Then, using the supplied
-    glacier outlines, a threshold between bright/dark pixels is chosen using the Otsu Threshold (Otsu, 1979).
+    Using the supplied glacier outlines, a threshold between bright/dark pixels is chosen using the Otsu Threshold
+    (Otsu, 1979), using either the topographically-corrected NIR band (method = nir), or the topographically-corrected
+    albedo (method = albedo).
 
     :param granule: The Landsat product ID to load (e.g., LC08_L1TP_...)
     :param fn_dem: the filename of the DEM to use for topographic correction
     :param fn_outlines: the filename for the glacier outlines to use.
     :param data_dir: The directory where the Landsat directory is. Defaults to current directory.
+    :param method: the method of choosing the threshold. Must be one of [nir, albedo]; default is albedo.
     :param how: How to calculate the threshold: on an individual glacier basis, by glacier complex, or by scene. Must
         be one of [individual, complex, scene]; default is individual.
-    :param return_rast: whether or not to return the raster after saving it.
+    :param return_rast: return the raster after saving it.
     :return: None, or the snow map raster and scene-wide threshold (if return_rast is True)
     """
     assert how in ['individual', 'complex', 'scene'], "how must be one of: [individual, complex, scene]"
+    assert method in ['nir', 'albedo'], "method must be one of [nir, albedo]"
 
     do_individual = how in ['individual', 'complex']
 
@@ -215,11 +219,20 @@ def snow_map(granule, fn_dem, fn_outlines, data_dir='.', how: str = 'individual'
     vis_mask = ~snow_index.get_mask()
 
     # get the cloud mask from the qa band
-    is_cloud = cloud_mask(granule, data_dir)
+    # is_cloud = cloud_mask(granule, data_dir)
 
     # apply the ekstrand (1996) correction to the NIR band
     #corrected_nir = ekstrand_corr(granule, nir_band, fn_dem, data_dir=data_dir)
-    corrected_nir = corrected_toa(granule, nir_band, fn_dem, data_dir=data_dir)
+    if method == 'nir':
+        thresh_band = corrected_toa(granule, nir_band, fn_dem, data_dir=data_dir)
+    else:
+        if Path(data_dir, granule + '_albedo.tif').exists():
+            thresh_band = gu.Raster(Path(data_dir, granule + '_albedo.tif'))
+        else:
+            thresh_band = albedo(granule, fn_dem, data_dir=data_dir)
+            thresh_band.save(Path(data_dir, granule + '_albedo.tif'))
+
+        corrected_nir = corrected_toa(granule, nir_band, fn_dem, data_dir=data_dir)
 
     # create a glacier mask and initialize the snow classification raster
     outlines = gu.Vector(fn_outlines)
@@ -227,7 +240,7 @@ def snow_map(granule, fn_dem, fn_outlines, data_dir='.', how: str = 'individual'
         outlines = outlines.dissolve().explode()
         outlines.ds.index = range(len(outlines.ds))
 
-    rasterized = outlines.rasterize(corrected_nir)
+    rasterized = outlines.rasterize(thresh_band)
 
     snow_class = rasterized.copy(new_array=np.ones_like(rasterized.data))
     snow_class.set_nodata(0)
@@ -239,41 +252,43 @@ def snow_map(granule, fn_dem, fn_outlines, data_dir='.', how: str = 'individual'
     snow_class[~masked] = 0
 
     # TODO: implement some kind of multiprocessing to speed this up?
-    glac_snow_ice = masked & (snow_index > 0.5) & (~is_cloud)
+    if method == 'nir':
+        glac_snow_ice = masked & (snow_index > 0.5) & (thresh_band > 0.1)
+    else:
+        glac_snow_ice = masked & (snow_index > 0.5) & (corrected_nir > 0.1)
 
     if np.count_nonzero(glac_snow_ice) / np.count_nonzero(masked) < 0.1:
         raise ValueError("Not enough valid on-glacier pixels found.")
 
-    rad = corrected_nir[glac_snow_ice]
-    glob_thresh = threshold_otsu(rad * 100) / 100
-    print(f"Scene-wide reflectance threshold: {glob_thresh:.3f}")
+    rad = thresh_band[glac_snow_ice]
+    glob_thresh = threshold_otsu(rad[~rad.mask])
+    print(f"Scene-wide reflectance/albedo threshold: {glob_thresh:.3f}")
 
     # glacier by glacier? dissolve into complexes? treat as a single entity?
     if do_individual:
         for ind in unique_inds:
             glac = rasterized == ind
 
-            if np.count_nonzero(is_cloud[glac]) / np.count_nonzero(glac) > 0.4:
+            if np.count_nonzero(snow_index[glac] > 0.5) / np.count_nonzero(glac) > 0.5:
                 snow_class[glac] = 0
                 continue
 
-            glac_snow_ice = masked & (snow_index > 0.6) & (~is_cloud)
-            rad = corrected_nir[glac_snow_ice]
+            rad = thresh_band[glac & glac_snow_ice]
             if rad.size > 0:
                 if np.count_nonzero(rad > glob_thresh) / rad.size > 0.1:
-                    thresh = threshold_otsu(rad * 100) / 100
+                    thresh = threshold_otsu(rad[~rad.mask])
                 else:
                     thresh = glob_thresh
 
-                snow_class[glac] = 1
-                snow_class[masked & (corrected_nir > thresh)] = 2
+                snow_class[masked & (thresh_band < thresh) & (snow_index > 0.5)] = 1
+                snow_class[masked & (thresh_band >= thresh) & (snow_index > 0.5)] = 2
             else:
                 snow_class[glac] = 0
     else:
-        snow_class[masked & (corrected_nir > glob_thresh)] = 2
+        snow_class[masked & (thresh_band > glob_thresh)] = 2
 
-    snow_class[is_cloud] = 0
-    snow_class.save(Path(data_dir, granule + f"_{how}_snow.tif"))
+    snow_class[snow_index < 0.5] = 0
+    snow_class.save(Path(data_dir, granule + f"{method}_{how}_snow.tif"))
 
     if return_rast:
         return snow_class, glob_thresh
