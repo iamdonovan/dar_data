@@ -275,10 +275,6 @@ def snow_map(granule, fn_dem, fn_outlines, data_dir='.', method: str = 'nir',
         for ind in unique_inds:
             glac = rasterized == ind
 
-            if np.count_nonzero(snow_index[glac] > 0.5) / np.count_nonzero(glac) > 0.5:
-                snow_class[glac] = 0
-                continue
-
             if method == 'nir':
                 rad = thresh_band[glac & glac_snow_ice]
             else:
@@ -290,12 +286,12 @@ def snow_map(granule, fn_dem, fn_outlines, data_dir='.', method: str = 'nir',
                 else:
                     thresh = glob_thresh
 
-                snow_class[masked & (thresh_band < thresh) & (snow_index > 0.5)] = 1
-                snow_class[masked & (thresh_band >= thresh) & (snow_index > 0.5)] = 2
+                snow_class[glac & glac_snow_ice & (thresh_band < thresh)] = 1
+                snow_class[glac & glac_snow_ice & (thresh_band >= thresh)] = 2
             else:
                 snow_class[glac] = 0
     else:
-        snow_class[masked & (thresh_band > glob_thresh)] = 2
+        snow_class[glac_snow_ice & (thresh_band > glob_thresh)] = 2
 
     snow_class.save(Path(data_dir, granule + f"_{method}_{how}_snow.tif"))
 
