@@ -3,6 +3,7 @@ from skimage.filters import threshold_otsu
 import numpy as np
 import geoutils as gu
 import xdem
+from tqdm import tqdm
 from typing import Union
 from . import tools
 
@@ -272,7 +273,7 @@ def snow_map(granule, fn_dem, fn_outlines, data_dir='.', method: str = 'nir',
 
     # glacier by glacier? dissolve into complexes? treat as a single entity?
     if do_individual:
-        for ind in unique_inds:
+        for ind in tqdm(unique_inds, desc='Individual thresholds'):
             glac = rasterized == ind
 
             if method == 'nir':
