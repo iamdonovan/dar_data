@@ -254,32 +254,38 @@ def snow_map(granule, fn_dem, fn_outlines, data_dir='.', method: str = 'nir',
 
     # TODO: implement some kind of multiprocessing to speed this up?
     if method == 'nir':
-        glac_snow_ice = masked & (snow_index > 0.5) & (thresh_band > 0.15)
+        glac_snow_ice = np.logical_and.reduce([masked.data, (snow_index > 0.5).data, (thresh_band > 0.15).data])
     else:
-        glac_snow_ice = masked & (snow_index > 0.5) & (corrected_nir > 0.15)
+        glac_snow_ice = np.logical_and.reduce([masked.data, (snow_index > 0.5).data, (corrected_nir > 0.15).data])
 
-    snow_class[~glac_snow_ice] = 0
+    snow_class.data[~glac_snow_ice] = 0
 
     if np.count_nonzero(glac_snow_ice) / np.count_nonzero(masked) < 0.1:
         raise ValueError("Not enough valid on-glacier pixels found.")
 
     if method == 'nir':
-        rad = thresh_band[glac_snow_ice]
+        rad = thresh_band.data[glac_snow_ice]
     else:
-        rad = thresh_band[glac_snow_ice & (thresh_band >= 0.25) & (thresh_band <= 0.55)]
+        rad = thresh_band.data[np.logical_and.reduce([glac_snow_ice,
+                                                      (thresh_band >= 0.25).data,
+                                                      (thresh_band <= 0.55).data])]
 
     glob_thresh = threshold_otsu(rad[~rad.mask])
+
     print(f"Scene-wide reflectance/albedo threshold: {glob_thresh:.3f}")
 
     # glacier by glacier? dissolve into complexes? treat as a single entity?
     if do_individual:
         for ind in tqdm(unique_inds, desc='Individual thresholds'):
-            glac = rasterized == ind
+            glac = rasterized.data == ind
+            this_snow_ice = np.logical_and(glac, glac_snow_ice)
 
             if method == 'nir':
-                rad = thresh_band[glac & glac_snow_ice]
+                rad = thresh_band[this_snow_ice]
             else:
-                rad = thresh_band[glac & glac_snow_ice & (thresh_band >= 0.25) & (thresh_band <= 0.55)]
+                rad = thresh_band.data[np.logical_and.reduce([this_snow_ice,
+                                                              (thresh_band >= 0.25).data,
+                                                              (thresh_band <= 0.55).data])]
 
             if rad.size > 0:
                 if np.count_nonzero(rad > glob_thresh) / rad.size > 0.1:
@@ -287,12 +293,12 @@ def snow_map(granule, fn_dem, fn_outlines, data_dir='.', method: str = 'nir',
                 else:
                     thresh = glob_thresh
 
-                snow_class[glac & glac_snow_ice & (thresh_band < thresh)] = 1
-                snow_class[glac & glac_snow_ice & (thresh_band >= thresh)] = 2
+                snow_class.data[np.logical_and(this_snow_ice, (thresh_band < thresh).data)] = 1
+                snow_class.data[np.logical_and(this_snow_ice, (thresh_band >= thresh).data)] = 2
             else:
-                snow_class[glac] = 0
+                snow_class.data[glac] = 0
     else:
-        snow_class[glac_snow_ice & (thresh_band > glob_thresh)] = 2
+        snow_class.data[np.logical_and(glac_snow_ice, (thresh_band > glob_thresh).data)] = 2
 
     snow_class.save(Path(data_dir, granule + f"_{method}_{how}_snow.tif"))
 
