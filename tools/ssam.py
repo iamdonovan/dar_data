@@ -231,6 +231,7 @@ def snow_map(granule, fn_dem, fn_outlines, data_dir='.', method: str = 'nir',
     #corrected_nir = ekstrand_corr(granule, nir_band, fn_dem, data_dir=data_dir)
     if method == 'nir':
         thresh_band = corrected_toa(granule, nir_band, fn_dem, data_dir=data_dir)
+        thresh_band = _dark_object(thresh_band)
     else:
         if Path(data_dir, granule + '_albedo.tif').exists():
             thresh_band = gu.Raster(Path(data_dir, granule + '_albedo.tif'))
@@ -239,6 +240,7 @@ def snow_map(granule, fn_dem, fn_outlines, data_dir='.', method: str = 'nir',
             thresh_band.save(Path(data_dir, granule + '_albedo.tif'))
 
         corrected_nir = corrected_toa(granule, nir_band, fn_dem, data_dir=data_dir)
+        corrected_nir = _dark_object(corrected_nir)
 
     # create a glacier mask and initialize the snow classification raster
     outlines = gu.Vector(fn_outlines)
@@ -259,9 +261,9 @@ def snow_map(granule, fn_dem, fn_outlines, data_dir='.', method: str = 'nir',
 
     # TODO: implement some kind of multiprocessing to speed this up?
     if method == 'nir':
-        snow = np.logical_and([(snow_index > 0.5).data, (thresh_band > 0.15).data])
+        snow = np.logical_and([(snow_index > 0.5).data, (thresh_band > 0.1).data])
     else:
-        snow = np.logical_and([(snow_index > 0.5).data, (corrected_nir > 0.15).data])
+        snow = np.logical_and([(snow_index > 0.5).data, (corrected_nir > 0.1).data])
 
     glac_snow_ice = np.logical_and([snow, masked.data])
     snow_class.data[~snow] = 0
