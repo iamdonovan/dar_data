@@ -46,7 +46,7 @@ def to_radiance(band: int, raster: gu.Raster, metadata: dict) -> gu.Raster:
     return raster
 
 
-def ndsi(granule: str, data_dir: str = '.') -> gu.Raster:
+def ndsi(granule: str, data_dir: str = '.', dark_object: bool = False) -> gu.Raster:
     """
     Calculate the normalized difference snow and ice index (NDSI) for a Landsat scene, using the formula:
 
@@ -56,6 +56,7 @@ def ndsi(granule: str, data_dir: str = '.') -> gu.Raster:
 
     :param granule: The Landsat product ID to load (e.g., LC08_L1TP_...)
     :param data_dir: The directory where the Landsat directory is. Defaults to current directory.
+    :param dark_object: use dark object subtraction on the resulting image.
     :return: the normalized difference snow and ice index
     """
 
@@ -74,6 +75,10 @@ def ndsi(granule: str, data_dir: str = '.') -> gu.Raster:
 
     swir = to_reflectance(swir_band, swir, metadata)
     green = to_reflectance(green_band, green, metadata)
+
+    if dark_object:
+        swir = _dark_object(swir)
+        green = _dark_object(green)
 
     return (green - swir) / (green + swir)
 
@@ -216,7 +221,7 @@ def snow_map(granule, fn_dem, fn_outlines, data_dir='.', method: str = 'nir',
         nir_band = 5
 
     # nir = gu.Raster(Path(data_dir, granule, '_'.join(granule, f"B{nir_band}.TIF")))
-    snow_index = ndsi(granule, data_dir)
+    snow_index = ndsi(granule, data_dir, dark_object=True)
     vis_mask = ~snow_index.get_mask()
 
     # get the cloud mask from the qa band
