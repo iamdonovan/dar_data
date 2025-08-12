@@ -257,8 +257,6 @@ def snow_map(granule, fn_dem, fn_outlines, data_dir='.', method: str = 'nir',
     masked = vis_mask & (rasterized > 0)
     unique_inds = np.unique(rasterized[masked])
 
-    snow_class[~masked] = 0
-
     # TODO: implement some kind of multiprocessing to speed this up?
     if method == 'nir':
         snow = np.logical_and((snow_index > 0.5).data, (thresh_band > 0.1).data)
