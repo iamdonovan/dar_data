@@ -250,7 +250,7 @@ def snow_map(granule, fn_dem, fn_outlines, data_dir='.', method: str = 'nir',
 
     rasterized = outlines.rasterize(thresh_band)
 
-    snow_class = rasterized.copy(new_array=np.ones_like(rasterized.data))
+    snow_class = rasterized.copy(new_array=2 * np.ones_like(rasterized.data))
     snow_class.set_nodata(0)
 
     # get the unique indices from the glacier mask
@@ -259,9 +259,9 @@ def snow_map(granule, fn_dem, fn_outlines, data_dir='.', method: str = 'nir',
 
     # TODO: implement some kind of multiprocessing to speed this up?
     if method == 'nir':
-        snow = np.logical_and((snow_index > 0.5).data, (thresh_band > 0.1).data)
+        snow = np.logical_and((snow_index > 0.5).data, (thresh_band > 0.15).data)
     else:
-        snow = np.logical_and((snow_index > 0.5).data, (corrected_nir > 0.1).data)
+        snow = np.logical_and((snow_index > 0.5).data, (corrected_nir > 0.15).data)
 
     glac_snow_ice = np.logical_and(snow, masked.data)
     snow_class.data[~snow] = 0
@@ -304,7 +304,7 @@ def snow_map(granule, fn_dem, fn_outlines, data_dir='.', method: str = 'nir',
             else:
                 snow_class.data[glac] = 0
     else:
-        snow_class.data[np.logical_and(glac_snow_ice, (thresh_band > glob_thresh).data)] = 2
+        snow_class.data[np.logical_and(glac_snow_ice, (thresh_band < glob_thresh).data)] = 1
 
     snow_class.save(Path(data_dir, granule + f"_{method}_{how}_snow.tif"))
 
