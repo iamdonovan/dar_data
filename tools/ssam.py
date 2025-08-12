@@ -254,11 +254,12 @@ def snow_map(granule, fn_dem, fn_outlines, data_dir='.', method: str = 'nir',
 
     # TODO: implement some kind of multiprocessing to speed this up?
     if method == 'nir':
-        glac_snow_ice = np.logical_and.reduce([masked.data, (snow_index > 0.5).data, (thresh_band > 0.15).data])
+        snow = np.logical_and([(snow_index > 0.5).data, (thresh_band > 0.15).data])
     else:
-        glac_snow_ice = np.logical_and.reduce([masked.data, (snow_index > 0.5).data, (corrected_nir > 0.15).data])
+        snow = np.logical_and([(snow_index > 0.5).data, (corrected_nir > 0.15).data])
 
-    snow_class.data[~glac_snow_ice] = 0
+    glac_snow_ice = np.logical_and([snow, masked.data])
+    snow_class.data[~snow] = 0
 
     if np.count_nonzero(glac_snow_ice) / np.count_nonzero(masked) < 0.1:
         raise ValueError("Not enough valid on-glacier pixels found.")
