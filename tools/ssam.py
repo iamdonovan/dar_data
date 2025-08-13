@@ -46,7 +46,7 @@ def to_radiance(band: int, raster: gu.Raster, metadata: dict) -> gu.Raster:
     return raster
 
 
-def ndsi(granule: str, data_dir: str = '.', dark_object: bool = False) -> gu.Raster:
+def ndsi(granule: str, data_dir: str = '.', dark_object: bool = False, is_sr: bool = False) -> gu.Raster:
     """
     Calculate the normalized difference snow and ice index (NDSI) for a Landsat scene, using the formula:
 
@@ -57,6 +57,7 @@ def ndsi(granule: str, data_dir: str = '.', dark_object: bool = False) -> gu.Ras
     :param granule: The Landsat product ID to load (e.g., LC08_L1TP_...)
     :param data_dir: The directory where the Landsat directory is. Defaults to current directory.
     :param dark_object: use dark object subtraction on the resulting image.
+    :param is_sr: whether the metadata is for the L2 surface reflectance product
     :return: the normalized difference snow and ice index
     """
 
@@ -70,11 +71,15 @@ def ndsi(granule: str, data_dir: str = '.', dark_object: bool = False) -> gu.Ras
         swir_band = 6
         green_band = 3
 
-    swir = gu.Raster(Path(data_dir, granule, '_'.join([granule, f"B{swir_band}.TIF"]))).astype(np.float64)
-    green = gu.Raster(Path(data_dir, granule, '_'.join([granule, f"B{green_band}.TIF"]))).astype(np.float64)
+    if is_sr:
+        swir = gu.Raster(Path(data_dir, granule, '_'.join([granule, f"SR_B{swir_band}.TIF"]))).astype(np.float64)
+        green = gu.Raster(Path(data_dir, granule, '_'.join([granule, f"SR_B{green_band}.TIF"]))).astype(np.float64)
+    else:
+        swir = gu.Raster(Path(data_dir, granule, '_'.join([granule, f"B{swir_band}.TIF"]))).astype(np.float64)
+        green = gu.Raster(Path(data_dir, granule, '_'.join([granule, f"B{green_band}.TIF"]))).astype(np.float64)
 
-    swir = to_reflectance(swir_band, swir, metadata)
-    green = to_reflectance(green_band, green, metadata)
+    swir = to_reflectance(swir_band, swir, metadata, is_sr=is_sr)
+    green = to_reflectance(green_band, green, metadata, is_sr=is_sr)
 
     if dark_object:
         swir = _dark_object(swir)
@@ -329,7 +334,7 @@ def cloud_mask(granule: str, data_dir: str ='.') -> gu.Raster:
     return np.bitwise_and(qa_band, cloud_flag) > 2
 
 
-def albedo(granule: str, fn_dem: str, data_dir: str = '.') -> gu.Raster:
+def albedo(granule: str, fn_dem: str, data_dir: str = '.', is_sr: bool = False) -> gu.Raster:
     """
     Calculate the terrain-corrected albedo for a given Landsat scene, using the following equation, adapted from
     Liang, S. (2000). Remote Sens. Env. 76, 213-238:
@@ -355,7 +360,11 @@ def albedo(granule: str, fn_dem: str, data_dir: str = '.') -> gu.Raster:
 
     corrected = []
     for band in bands:
-        corrected.append(_dark_object(corrected_toa(granule, band, fn_dem, data_dir=data_dir)))
+        if not is_sr:
+            corrected.append(_dark_object(corrected_toa(granule, band, fn_dem, data_dir=data_dir)))
+        else:
+            rast = gu.Raster(Path(data_dir, granule, '_'.join([granule, f"SR_B{band}.TIF"]))).astype(np.float64)
+            corrected.append(to_reflectance(band, rast, tools.landsat_metadata(granule, data_dir), is_sr=True))
 
     return gu.Raster(sum([coeff * band for coeff, band in zip(coeffs, corrected)]) - 0.0018)
 
