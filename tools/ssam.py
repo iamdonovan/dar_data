@@ -1,10 +1,12 @@
 from pathlib import Path
 from skimage.filters import threshold_otsu
+from scipy import stats
 import numpy as np
 import geoutils as gu
 import xdem
 from tqdm import tqdm
 from typing import Union
+from collections.abc import Callable
 from . import tools
 
 
@@ -86,6 +88,49 @@ def ndsi(granule: str, data_dir: str = '.', dark_object: bool = False, is_sr: bo
         green = _dark_object(green)
 
     return (green - swir) / (green + swir)
+
+
+def ndwi(granule: str, data_dir: str = '.', dark_object: bool = False, is_sr: bool = False) -> gu.Raster:
+    """
+    Calculate the normalized difference water index (NDWI) for a Landsat scene, using the formula:
+
+    NDSI = (Green - NIR) / (Green + NIR)
+
+    Where Green and NIR are the visible green and near infrared bands.
+
+    :param granule: The Landsat product ID to load (e.g., LC08_L1TP_...)
+    :param data_dir: The directory where the Landsat directory is. Defaults to current directory.
+    :param dark_object: use dark object subtraction on the resulting image.
+    :param is_sr: whether the metadata is for the L2 surface reflectance product
+    :return: the normalized difference snow and ice index
+    """
+
+    metadata = tools.landsat_metadata(granule, data_dir)
+    sens = granule.split('_')[0]
+
+    if sens in ['LT04', 'LT05', 'LE07']:
+        nir_band = 4
+        green_band = 2
+    else:
+        nir_band = 5
+        green_band = 3
+
+    if is_sr:
+        nir = gu.Raster(Path(data_dir, granule, '_'.join([granule, f"SR_B{nir_band}.TIF"]))).astype(np.float64)
+        green = gu.Raster(Path(data_dir, granule, '_'.join([granule, f"SR_B{green_band}.TIF"]))).astype(np.float64)
+    else:
+        nir = gu.Raster(Path(data_dir, granule, '_'.join([granule, f"B{nir_band}.TIF"]))).astype(np.float64)
+        green = gu.Raster(Path(data_dir, granule, '_'.join([granule, f"B{green_band}.TIF"]))).astype(np.float64)
+
+    nir = to_reflectance(nir_band, nir, metadata, is_sr=is_sr)
+    green = to_reflectance(green_band, green, metadata, is_sr=is_sr)
+
+    if dark_object:
+        nir = _dark_object(nir)
+        green = _dark_object(green)
+
+    return (green - nir) / (green + nir)
+
 
 
 def ekstrand_corr(granule: str, bandnum: int, fn_dem: str, data_dir: str ='.') -> gu.Raster:
@@ -196,7 +241,8 @@ def corrected_toa(granule: str, bandnum: int, fn_dem: str, data_dir: str ='.') -
 # TODO: implement a cloud mask using the QA bands
 def snow_map(granule, fn_dem, fn_outlines, data_dir='.', method: str = 'nir',
              how: str = 'individual',
-             return_rast: bool = False) -> Union[None, tuple[gu.Raster, float]]:
+             return_rast: bool = False,
+             use_elevation: bool = False) -> Union[None, tuple[gu.Raster, float]]:
     """
     Classify glacier outlines into snow/glacier ice.
 
@@ -212,6 +258,8 @@ def snow_map(granule, fn_dem, fn_outlines, data_dir='.', method: str = 'nir',
     :param how: How to calculate the threshold: on an individual glacier basis, by glacier complex, or by scene. Must
         be one of [individual, complex, scene]; default is individual.
     :param return_rast: return the raster after saving it.
+    :param use_elevation: use the DEM to calculate the albedo threshold based on the maxmimum slope of the
+        albedo-elevation profile for on-glacier pixels. Only works if how='albedo'.
     :return: None, or the snow map raster and scene-wide threshold (if return_rast is True)
     """
     assert how in ['individual', 'complex', 'scene'], "how must be one of: [individual, complex, scene]"
@@ -226,8 +274,19 @@ def snow_map(granule, fn_dem, fn_outlines, data_dir='.', method: str = 'nir',
         nir_band = 5
 
     # nir = gu.Raster(Path(data_dir, granule, '_'.join(granule, f"B{nir_band}.TIF")))
-    snow_index = ndsi(granule, data_dir, dark_object=True)
+    if Path(data_dir, granule + '_ndsi.tif').exists():
+        snow_index = gu.Raster(Path(data_dir, granule + '_ndsi.tif'))
+    else:
+        snow_index = ndsi(granule, data_dir, dark_object=True)
+        snow_index.save(Path(data_dir, granule + '_ndsi.tif'))
+
     vis_mask = ~snow_index.get_mask()
+
+    if Path(data_dir, granule + '_ndwi.tif').exists():
+        water_index = gu.Raster(Path(data_dir, granule + '_ndwi.tif'))
+    else:
+        water_index = ndwi(granule, data_dir, dark_object=True)
+        water_index.save(Path(data_dir, granule + '_ndwi.tif'))
 
     # get the cloud mask from the qa band
     # is_cloud = cloud_mask(granule, data_dir)
@@ -244,8 +303,12 @@ def snow_map(granule, fn_dem, fn_outlines, data_dir='.', method: str = 'nir',
             thresh_band = albedo(granule, fn_dem, data_dir=data_dir)
             thresh_band.save(Path(data_dir, granule + '_albedo.tif'))
 
-        corrected_nir = corrected_toa(granule, nir_band, fn_dem, data_dir=data_dir)
-        corrected_nir = _dark_object(corrected_nir)
+        if Path(data_dir, granule + '_nir.tif').exists():
+            corrected_nir = gu.Raster(Path(data_dir, granule + '_nir.tif'))
+        else:
+            corrected_nir = corrected_toa(granule, nir_band, fn_dem, data_dir=data_dir)
+            corrected_nir = _dark_object(corrected_nir)
+            corrected_nir.save(Path(data_dir, granule + '_nir.tif'))
 
     # create a glacier mask and initialize the snow classification raster
     outlines = gu.Vector(fn_outlines)
@@ -264,9 +327,9 @@ def snow_map(granule, fn_dem, fn_outlines, data_dir='.', method: str = 'nir',
 
     # TODO: implement some kind of multiprocessing to speed this up?
     if method == 'nir':
-        snow = np.logical_and((snow_index > 0.5).data, (thresh_band > 0.15).data)
+        snow = np.logical_and.reduce([(snow_index > 0.5).data, (water_index < 0.15).data, (thresh_band > 0.1).data])
     else:
-        snow = np.logical_and((snow_index > 0.5).data, (corrected_nir > 0.15).data)
+        snow = np.logical_and.reduce([(snow_index > 0.5).data, (water_index < 0.15).data, (corrected_nir > 0.1).data])
 
     glac_snow_ice = np.logical_and(snow, masked.data)
     snow_class.data[~snow] = 0
@@ -276,12 +339,15 @@ def snow_map(granule, fn_dem, fn_outlines, data_dir='.', method: str = 'nir',
 
     if method == 'nir':
         rad = thresh_band.data[glac_snow_ice]
+        glob_thresh = threshold_otsu(rad[~rad.mask])
     else:
-        rad = thresh_band.data[np.logical_and.reduce([glac_snow_ice,
-                                                      (thresh_band >= 0.25).data,
-                                                      (thresh_band <= 0.55).data])]
-
-    glob_thresh = threshold_otsu(rad[~rad.mask])
+        if use_elevation:
+            glob_thresh = _albedo_thresh(thresh_band, gu.Raster(fn_dem), glac_snow_ice)
+        else:
+            rad = thresh_band.data[np.logical_and.reduce([glac_snow_ice,
+                                                          (thresh_band >= 0.25).data,
+                                                          (thresh_band <= 0.55).data])]
+            glob_thresh = threshold_otsu(rad[~rad.mask])
 
     print(f"Scene-wide reflectance/albedo threshold: {glob_thresh:.3f}")
 
@@ -319,6 +385,39 @@ def snow_map(granule, fn_dem, fn_outlines, data_dir='.', method: str = 'nir',
         return None
 
 
+def _albedo_thresh(albedo: gu.Raster, dem: gu.Raster, glacmask: gu.Mask,
+                   bin_size: float = 50., statistic: Union[str, Callable] = 'median') -> float:
+    """
+    Calculates the albedo threshold value based on the steepest slope in the albedo-elevation profile.
+
+    :param albedo:
+    :param dem: a DEM
+    :param glacmask: a mask of on-glacier pixels
+    :param bin_size: the size of the elevation bins to use
+    :param statistic: the statistic to compute, as passed to scipy.stats.binned_statistic
+    :return: the computed threshold value
+    """
+
+    if not dem.shape == albedo.shape:
+        dem = dem.reproject(albedo)
+
+    onglac_albedo = albedo[glacmask]
+    onglac_el = dem[glacmask]
+
+    bins = np.unique(bin_size * np.floor(onglac_el / bin_size)).data
+
+    is_masked = np.logical_or(onglac_albedo.mask, onglac_el.mask)
+
+    bin_stat, bins, binned = stats.binned_statistic(onglac_el[~is_masked], onglac_albedo[~is_masked],
+                                                    statistic=statistic, bins=bins)
+
+    slope = np.diff(bin_stat, prepend=0)
+
+    smax = np.argmax(slope[np.logical_and(bin_stat > 0.25, bin_stat < 0.55)])
+
+    return bin_stat[np.logical_and(bin_stat > 0.25, bin_stat < 0.55)][smax]
+
+
 def cloud_mask(granule: str, data_dir: str ='.') -> gu.Raster:
     """
     Apply the QA_PIXEL cloud mask to a Landsat image.
@@ -329,7 +428,7 @@ def cloud_mask(granule: str, data_dir: str ='.') -> gu.Raster:
     """
     qa_band = gu.Raster(Path(data_dir, granule, f"{granule}_QA_PIXEL.TIF"))
     ## cloud flags are bits 1, 2, 3; confidence flags are 8-11
-    cloud_flag = int('1111', 2) * np.ones_like(qa_band.data)
+    cloud_flag = int('11110', 2) * np.ones_like(qa_band.data)
 
     return np.bitwise_and(qa_band, cloud_flag) > 2
 
@@ -371,5 +470,5 @@ def albedo(granule: str, fn_dem: str, data_dir: str = '.', is_sr: bool = False) 
 
 def _dark_object(rast: gu.Raster, p: float = 0.05) -> gu.Raster:
     corrected = rast - np.percentile(rast, p)
-    corrected[corrected < 0] = 0.01
+    corrected[corrected <= 0] = 0.001
     return corrected
