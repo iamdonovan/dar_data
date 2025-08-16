@@ -48,6 +48,34 @@ def to_radiance(band: int, raster: gu.Raster, metadata: dict) -> gu.Raster:
     return raster
 
 
+def brightness_temp(granule: str, data_dir: Union[str, Path] = '.') -> gu.Raster:
+    """
+    Rescale a Landsat thermal band to Brightness Temperature.
+
+    :param granule: The Landsat product ID to load (e.g., LC08_L1TP_...)
+    :param data_dir: The directory where the Landsat directory is. Defaults to current directory.
+    :return: the brightness temperature
+    """
+    metadata = tools.landsat_metadata(granule, data_dir)
+    sens = granule.split('_')[0]
+
+    if sens in ['LT04', 'LT05']:
+        thermal_band = 6
+    elif sens in ['LE07']:
+        thermal_band = '6_VCID_1'
+    else:
+        thermal_band = 10
+
+    radiance = to_radiance(thermal_band,
+                           gu.Raster(Path(data_dir, granule, '_'.join([granule, f"B{thermal_band}.TIF"]))),
+                           metadata)
+
+    k1 = float(metadata['LANDSAT_METADATA_FILE']['LEVEL1_THERMAL_CONSTANTS'][f"K1_CONSTANT_BAND_{thermal_band}"])
+    k2 = float(metadata['LANDSAT_METADATA_FILE']['LEVEL1_THERMAL_CONSTANTS'][f"K2_CONSTANT_BAND_{thermal_band}"])
+
+    return k2 / np.log((k1 / radiance) + 1)
+
+
 def ndsi(granule: str, data_dir: str = '.', dark_object: bool = False, is_sr: bool = False) -> gu.Raster:
     """
     Calculate the normalized difference snow and ice index (NDSI) for a Landsat scene, using the formula:
@@ -270,8 +298,10 @@ def snow_map(granule, fn_dem, fn_outlines, data_dir='.', method: str = 'nir',
     sens = granule.split('_')[0]
     if sens in ['LT04', 'LT05', 'LE07']:
         nir_band = 4
+        thermal_band = 6
     else:
         nir_band = 5
+        thermal_band = 10
 
     # nir = gu.Raster(Path(data_dir, granule, '_'.join(granule, f"B{nir_band}.TIF")))
     if Path(data_dir, granule + '_ndsi.tif').exists():
@@ -290,6 +320,17 @@ def snow_map(granule, fn_dem, fn_outlines, data_dir='.', method: str = 'nir',
 
     # get the cloud mask from the qa band
     # is_cloud = cloud_mask(granule, data_dir)
+    if Path(data_dir, granule + '_temp.tif').exists():
+        b_temp = gu.Raster(Path(data_dir, granule + '_temp.tif'))
+    else:
+        b_temp = brightness_temp(granule, data_dir)
+        b_temp.save(Path(data_dir, granule + '_temp.tif'))
+
+    if Path(data_dir, granule + '_cloud.tif').exists():
+        cloud = gu.Raster(Path(data_dir, granule + '_cloud.tif')) != 0
+    else:
+        cloud = irish_cloud_filter(granule, data_dir)
+        cloud.save(Path(data_dir, granule + '_cloud.tif'))
 
     # apply the ekstrand (1996) correction to the NIR band
     #corrected_nir = ekstrand_corr(granule, nir_band, fn_dem, data_dir=data_dir)
@@ -327,9 +368,11 @@ def snow_map(granule, fn_dem, fn_outlines, data_dir='.', method: str = 'nir',
 
     # TODO: implement some kind of multiprocessing to speed this up?
     if method == 'nir':
-        snow = np.logical_and.reduce([(snow_index > 0.5).data, (water_index < 0.15).data, (thresh_band > 0.1).data])
+        snow = np.logical_and.reduce([(snow_index > 0.5).data, (water_index < 0.15).data,
+                                      (thresh_band > 0.1).data, (b_temp < 290).data, (~cloud).data])
     else:
-        snow = np.logical_and.reduce([(snow_index > 0.5).data, (water_index < 0.15).data, (corrected_nir > 0.1).data])
+        snow = np.logical_and.reduce([(snow_index > 0.5).data, (water_index < 0.15).data,
+                                      (corrected_nir > 0.1).data, (b_temp < 290).data, (~cloud).data])
 
     glac_snow_ice = np.logical_and(snow, masked.data)
     snow_class.data[~snow] = 0
@@ -431,6 +474,97 @@ def cloud_mask(granule: str, data_dir: str ='.') -> gu.Raster:
     cloud_flag = int('11110', 2) * np.ones_like(qa_band.data)
 
     return np.bitwise_and(qa_band, cloud_flag) > 2
+
+
+def irish_cloud_filter(granule: str, data_dir: Union[str, Path] = '.') -> gu.Raster:
+    """
+    An implementation of the cloud masking procedure described by Irish (2000):
+
+        Irish RR (2000) Landsat 7 Automatic Cloud Cover Assessment. SPIE 4049, 348–355. doi:10.1117/12.410358.
+
+    :param granule: The Landsat product ID to load (e.g., LC08_L1TP_...)
+    :param data_dir: The directory where the Landsat directory is. Defaults to current directory.
+    :return: a logical mask with True values where cloud has been identified
+    """
+    meta = tools.landsat_metadata(granule, data_dir)
+
+    sens = granule.split('_')[0]
+    if sens in ['LT04', 'LT05', 'LE07']:
+        green_band = 2
+        red_band = 3
+        nir_band = 4
+        swir_band = 5
+        if sens in ['LT04', 'LT05']:
+            therm_band = 6
+        else:
+            therm_band = '6_VCID_1'
+    else:
+        green_band = 3
+        red_band = 4
+        nir_band = 5
+        swir_band = 6
+        therm_band = 10
+
+    therm_rad = to_radiance(therm_band,
+                            gu.Raster(Path(data_dir, granule, '_'.join([granule, f"B{therm_band}.TIF"]))), meta)
+
+    b_temp = brightness_temp(granule, data_dir)
+
+    green = to_reflectance(green_band,
+                           gu.Raster(Path(data_dir, granule, '_'.join([granule, f"B{green_band}.TIF"]))),
+                           meta)
+
+    red = to_reflectance(red_band,
+                         gu.Raster(Path(data_dir, granule, '_'.join([granule, f"B{red_band}.TIF"]))),
+                         meta)
+
+    nir = to_reflectance(nir_band,
+                         gu.Raster(Path(data_dir, granule, '_'.join([granule, f"B{nir_band}.TIF"]))),
+                         meta)
+
+    swir = to_reflectance(swir_band,
+                          gu.Raster(Path(data_dir, granule, '_'.join([granule, f"B{swir_band}.TIF"]))),
+                          meta)
+
+    composite = (1 - swir) * therm_rad
+    snow_index = ndsi(granule, data_dir)
+
+    first_mask = np.logical_and.reduce([(red > 0.08).data, (snow_index < 0.7).data, (b_temp < 300).data,
+                                        (composite < 7).data, (nir / red < 2).data, (nir / green < 2).data,
+                                        (nir / swir > 1).data])
+
+    warm = np.logical_and(first_mask, (composite > 5.5).data)
+    cold = np.logical_and(first_mask, (composite <= 5.5).data)
+
+    ambiguous = np.logical_and.reduce([(composite >= 6).data, (nir / red >= 2).data,
+                                       (nir / green >= 2).data, (nir / swir <= 1).data])
+
+    snow_pct = 100 * np.count_nonzero(snow_index > 0.7) / np.count_nonzero(~snow_index.get_mask())
+
+    if snow_pct < 1:
+        cloud = first_mask
+    else:
+        cloud = cold
+        ambiguous = np.logical_or(warm, ambiguous)
+
+    cc_pct = 100 * np.count_nonzero(cloud) / np.count_nonzero(~swir.get_mask())
+    desert_index = np.count_nonzero((nir / swir <= 1) == 1) / np.count_nonzero(~swir.get_mask())
+
+    cloud_temp = b_temp[cloud]
+
+    if any([desert_index > 0.5, cc_pct > 0.4, cloud_temp.mean() < 295]):
+        low = np.percentile(cloud_temp, 83.5)
+        high = np.percentile(cloud_temp, 97.5)
+
+        skew = stats.skew(cloud_temp)
+        if skew > 0:
+            shift = max(1, skew * cloud_temp.std())
+            high = max(np.percentile(cloud_temp, 98.75), high + shift)
+            low = low + shift
+
+        cloud = np.logical_or(cloud, np.logical_and(ambiguous, (b_temp <= low).data))
+
+    return swir.copy(new_array=cloud)
 
 
 def albedo(granule: str, fn_dem: str, data_dir: str = '.', is_sr: bool = False) -> gu.Raster:
