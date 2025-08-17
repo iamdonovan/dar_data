@@ -461,6 +461,30 @@ def _albedo_thresh(albedo: gu.Raster, dem: gu.Raster, glacmask: gu.Mask,
     return bin_stat[np.logical_and(bin_stat > 0.25, bin_stat < 0.55)][smax]
 
 
+def hillshade_shadow(img: gu.Raster, fn_dem: Union[str, Path], metadata: dict, thresh: int = 50) -> gu.Raster:
+    """
+    Return a mask of shadows computed from a DEM hillshade.
+
+    :param img: the Landsat image (or raster) to compute the shadow mask for
+    :param fn_dem: the filename of the DEM to use for computing the hillshades
+    :param metadata: the landsat metadata, in dict format
+    :param thresh: the hillshade value to use to determine shadows
+    :return: the mask of shadows based on the hillshade
+    """
+
+    # load the DEM and reproject it to the image
+    dem = xdem.DEM(fn_dem).reproject(img)
+
+    # get the azimuth and elevation angles from the metadata
+    azimuth = float(metadata['LANDSAT_METADATA_FILE']['IMAGE_ATTRIBUTES']['SUN_AZIMUTH'])
+    elevation = float(metadata['LANDSAT_METADATA_FILE']['IMAGE_ATTRIBUTES']['SUN_ELEVATION'])
+
+    # have to subtract azimuth from 270 (mod 360) to get the same output as gdal for some reason
+    hillshade = dem.hillshade(azimuth=(270 - azimuth) % 360, altitude=elevation)
+
+    return hillshade < thresh
+
+
 def cloud_mask(granule: str, data_dir: str ='.') -> gu.Raster:
     """
     Apply the QA_PIXEL cloud mask to a Landsat image.
