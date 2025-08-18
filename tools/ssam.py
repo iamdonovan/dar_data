@@ -3,6 +3,7 @@ from skimage.filters import threshold_otsu
 from scipy import stats
 import numpy as np
 import geoutils as gu
+from shapely.geometry import LineString
 import xdem
 from tqdm import tqdm
 from typing import Union
@@ -188,11 +189,13 @@ def ekstrand_corr(granule: str, bandnum: int, fn_dem: str, data_dir: str ='.') -
 
     # calculate the solar incidence angle
     incidence = compute_incidence_angle(metadata, dem)
+    cos_inc = np.cos(incidence)
+    cos_inc[cos_inc <= 1e-6] = 1e-6
 
     # need to get k (minnaert constant)
     kk = _minnaert_const(radiance, slope, incidence)
 
-    return radiance * np.power((np.cos(zenith) / np.cos(incidence)), (kk * np.cos(incidence)))
+    return radiance * np.power((np.cos(zenith) / cos_inc), (kk * cos_inc))
 
 
 # compute sun x, y, z rasters from rpc coefficients and dem
@@ -332,6 +335,12 @@ def snow_map(granule, fn_dem, fn_outlines, data_dir='.', method: str = 'nir',
         cloud = irish_cloud_filter(granule, data_dir)
         cloud.save(Path(data_dir, granule + '_cloud.tif'))
 
+    if Path(data_dir, granule + '_shadow.tif').exists():
+        shadow = gu.Raster(Path(data_dir, granule + '_shadow.tif')) != 0
+    else:
+        shadow = hillshade_shadow(snow_index, fn_dem, tools.landsat_metadata(granule, data_dir))
+        shadow.save(Path(data_dir, granule + '_shadow.tif'))
+
     # apply the ekstrand (1996) correction to the NIR band
     #corrected_nir = ekstrand_corr(granule, nir_band, fn_dem, data_dir=data_dir)
     if method == 'nir':
@@ -366,28 +375,34 @@ def snow_map(granule, fn_dem, fn_outlines, data_dir='.', method: str = 'nir',
     masked = vis_mask & (rasterized > 0)
     unique_inds = np.unique(rasterized[masked])
 
+    snow_class[~masked] = 0
+
     # TODO: implement some kind of multiprocessing to speed this up?
     if method == 'nir':
-        snow = np.logical_and.reduce([(snow_index > 0.5).data, (water_index < 0.15).data,
-                                      (thresh_band > 0.1).data, (b_temp < 290).data, (~cloud).data])
+        snow = np.logical_and.reduce([(snow_index > 0.4).data, (water_index < 0.35).data,
+                                      (b_temp < 290).data, (~cloud).data])
     else:
-        snow = np.logical_and.reduce([(snow_index > 0.5).data, (water_index < 0.15).data,
-                                      (corrected_nir > 0.1).data, (b_temp < 290).data, (~cloud).data])
+        snow = np.logical_and.reduce([(snow_index > 0.4).data, (water_index < 0.35).data,
+                                      (b_temp < 290).data, (~cloud).data])
 
     glac_snow_ice = np.logical_and(snow, masked.data)
+
+    not_shadow = np.logical_and((~shadow).data, glac_snow_ice)
+    glac_shadow = np.logical_and(shadow.data, glac_snow_ice)
+
     snow_class.data[~snow] = 0
 
     if np.count_nonzero(glac_snow_ice) / np.count_nonzero(masked) < 0.1:
         raise ValueError("Not enough valid on-glacier pixels found.")
 
     if method == 'nir':
-        rad = thresh_band.data[glac_snow_ice]
+        rad = thresh_band.data[not_shadow]
         glob_thresh = threshold_otsu(rad[~rad.mask])
     else:
         if use_elevation:
-            glob_thresh = _albedo_thresh(thresh_band, gu.Raster(fn_dem), glac_snow_ice)
+            glob_thresh = _albedo_thresh(thresh_band, gu.Raster(fn_dem), not_shadow)
         else:
-            rad = thresh_band.data[np.logical_and.reduce([glac_snow_ice,
+            rad = thresh_band.data[np.logical_and.reduce([not_shadow,
                                                           (thresh_band >= 0.25).data,
                                                           (thresh_band <= 0.55).data])]
             glob_thresh = threshold_otsu(rad[~rad.mask])
@@ -398,7 +413,7 @@ def snow_map(granule, fn_dem, fn_outlines, data_dir='.', method: str = 'nir',
     if do_individual:
         for ind in tqdm(unique_inds, desc='Individual thresholds'):
             glac = rasterized.data == ind
-            this_snow_ice = np.logical_and(glac, glac_snow_ice)
+            this_snow_ice = np.logical_and.reduce([glac, glac_snow_ice, not_shadow])
 
             if method == 'nir':
                 rad = thresh_band[this_snow_ice]
@@ -409,16 +424,27 @@ def snow_map(granule, fn_dem, fn_outlines, data_dir='.', method: str = 'nir',
 
             if rad.size > 0:
                 if np.count_nonzero(rad > glob_thresh) / rad.size > 0.1:
-                    thresh = threshold_otsu(rad[~rad.mask])
+                    if method == 'nir' or not use_elevation:
+                        thresh = threshold_otsu(rad[~rad.mask])
+                    else:
+                        thresh = _albedo_thresh(thresh_band, gu.Raster(fn_dem), this_snow_ice)
                 else:
                     thresh = glob_thresh
 
-                snow_class.data[np.logical_and(this_snow_ice, (thresh_band < thresh).data)] = 1
-                snow_class.data[np.logical_and(this_snow_ice, (thresh_band >= thresh).data)] = 2
+                snow_class.data[np.logical_and.reduce([glac, glac_snow_ice, (thresh_band < thresh).data])] = 1
+                snow_class.data[np.logical_and.reduce([glac, glac_snow_ice, (thresh_band >= thresh).data])] = 2
+
+                if use_elevation:
+                    snow_class = _elevation_threshold(snow_class, np.logical_and(glac, glac_shadow),
+                                                      np.logical_and(glac, not_shadow), gu.Raster(fn_dem))
+
             else:
                 snow_class.data[glac] = 0
     else:
-        snow_class.data[np.logical_and(glac_snow_ice, (thresh_band < glob_thresh).data)] = 1
+        snow_class.data[np.logical_and(not_shadow, (thresh_band < glob_thresh).data)] = 1
+
+    if use_elevation:
+        snow_class = _elevation_threshold(snow_class, glac_shadow, not_shadow, gu.Raster(fn_dem))
 
     snow_class.save(Path(data_dir, granule + f"_{method}_{how}_snow.tif"))
 
@@ -454,14 +480,45 @@ def _albedo_thresh(albedo: gu.Raster, dem: gu.Raster, glacmask: gu.Mask,
     bin_stat, bins, binned = stats.binned_statistic(onglac_el[~is_masked], onglac_albedo[~is_masked],
                                                     statistic=statistic, bins=bins)
 
-    slope = np.diff(bin_stat, prepend=0)
+    slope = np.diff(bin_stat, prepend=bin_stat[0])
 
     smax = np.argmax(slope[np.logical_and(bin_stat > 0.25, bin_stat < 0.55)])
 
     return bin_stat[np.logical_and(bin_stat > 0.25, bin_stat < 0.55)][smax]
 
 
-def hillshade_shadow(img: gu.Raster, fn_dem: Union[str, Path], metadata: dict, thresh: int = 50) -> gu.Raster:
+def _elevation_threshold(snow_class, shadow, not_shadow, dem, bin_size=50.):
+
+    if not dem.shape == snow_class.shape:
+        dem = dem.reproject(snow_class)
+
+    glac_ice = np.logical_and(not_shadow, (snow_class == 1).data)
+    glac_snow = np.logical_and(not_shadow, (snow_class == 2).data)
+
+    snow_el = dem[glac_snow]
+    ice_el = dem[glac_ice]
+
+    onglac_el = dem[not_shadow]
+    bins = np.unique(bin_size * np.floor(onglac_el / bin_size)).data
+
+    ice_pdf, bin_edges = np.histogram(ice_el, bins=bins, density=True)
+    snow_pdf, bin_edges = np.histogram(snow_el, bins=bins, density=True)
+
+    ice_cdf = np.insert(np.cumsum(ice_pdf * np.diff(bin_edges)), 0, 0, axis=0)
+    snow_cdf = np.insert(np.cumsum(snow_pdf * np.diff(bin_edges)), 0, 0, axis=0)
+
+    _ice = LineString(zip(bins, 1 - ice_cdf))
+    _sno = LineString(zip(bins, snow_cdf))
+
+    el_thresh = _ice.intersection(_sno).x
+
+    snow_class.data[np.logical_and(shadow, (dem >= el_thresh).data)] = 2
+    snow_class.data[np.logical_and(shadow, (dem < el_thresh).data)] = 1
+
+    return snow_class
+
+
+def hillshade_shadow(img: gu.Raster, fn_dem: Union[str, Path], metadata: dict, thresh: int = 70) -> gu.Raster:
     """
     Return a mask of shadows computed from a DEM hillshade.
 
