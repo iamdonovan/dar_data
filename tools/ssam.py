@@ -685,5 +685,5 @@ def albedo(granule: str, fn_dem: str, data_dir: str = '.', is_sr: bool = False) 
 
 def _dark_object(rast: gu.Raster, p: float = 0.05) -> gu.Raster:
     corrected = rast - np.percentile(rast, p)
-    corrected[corrected <= 0] = 0.001
+    corrected[(corrected <= 0) & ~corrected.get_mask()] = 0.001
     return corrected
