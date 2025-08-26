@@ -61,5 +61,7 @@ out_ds['cloud_land'] = ('time', thresholds['cloud_land'])
 # drop band
 out_ds = out_ds.drop_vars('band')
 
-# save to netcdf file
-out_ds.to_netcdf(out_name)
+# save to netcdf
+out_ds['snow_class'] = out_ds['snow_class'].astype(np.uint8)
+out_ds['snow_class'].rio.write_nodata(0, inplace=True)
+out_ds.rio.reproject('epsg:4326').to_netcdf(out_name)
