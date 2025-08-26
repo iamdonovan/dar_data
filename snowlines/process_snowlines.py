@@ -38,5 +38,6 @@ for granule in tqdm(granules):
         continue
 
 
-thresh_df = pd.DataFrame(data={'granule': granules, 'thresh': threshes})
+thresh_df = pd.DataFrame(data={'granule': granules, 'thresh': threshes,
+                               'cloud_scene': cloud_cover, 'cloud_land': cc_land})
 thresh_df.to_csv('snowline_thresholds.csv', index=False)
