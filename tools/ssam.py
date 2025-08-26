@@ -1,4 +1,5 @@
 from pathlib import Path
+import warnings
 from skimage.filters import threshold_otsu
 from scipy import stats
 import numpy as np
@@ -12,6 +13,11 @@ from . import tools
 
 
 np.seterr(divide='ignore', invalid='ignore')
+
+warnings.filterwarnings('ignore', message="Warning: 'partition' will ignore the 'mask' of the MaskedArray.",
+                        category=UserWarning)
+warnings.filterwarnings('ignore', message="Unmasked values equal to the nodata value found in data array.",
+                        category=UserWarning)
 
 def to_reflectance(band: int, raster: gu.Raster, metadata: dict, is_sr: bool = False) -> gu.Raster:
     """
