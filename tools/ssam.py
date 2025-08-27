@@ -3,11 +3,13 @@ import warnings
 from skimage.filters import threshold_otsu
 from scipy import stats
 import numpy as np
+import pandas as pd
 import geoutils as gu
 from shapely.geometry import LineString
 import xdem
 from tqdm import tqdm
 from typing import Union
+from numpy.typing import NDArray
 from collections.abc import Callable
 from . import tools
 
@@ -693,3 +695,121 @@ def _dark_object(rast: gu.Raster, p: float = 0.05) -> gu.Raster:
     corrected = rast - np.percentile(rast, p)
     corrected[(corrected <= 0) & ~corrected.get_mask()] = 0.001
     return corrected
+
+
+def find_snowline(glacier: NDArray, dem: gu.Raster, snowmap: NDArray,
+                  bin_size: Union[int, float]=20, clean: bool = True) -> Union[float, int]:
+    """
+    Find snowline elevation for a given glacier, given a DEM and a snowmap. Similar to Rastner et al. (2019), looks
+    for the lowest elevation bin where at least 50% of the bin is covered by snow. If no such bin is found, returns a
+    value of -1.
+
+    :param glacier: a glacier mask
+    :param dem: the DEM to use for snowline elevation estimation
+    :param snowmap: a snow classification map, as produced by ssam.snow_map, with values of 1 where there is on-glacier
+        ice and 2 where there is snow.
+    :param bin_size: the width of the elevation bins to use
+    :param clean: whether to use the full glacier mask (possibly including debris or off-glacier areas), or restrict
+        it to only "clean" snow/ice.
+    :return: the snowline elevation, or -1 if no elevation was found.
+    """
+    snow_mask = np.logical_and(glacier, snowmap == 2)
+
+    if clean:
+        glac_mask = np.logical_and(glacier, snowmap > 0)
+    else:
+        glac_mask = glacier
+
+    snowice_els = dem.data[glac_mask]
+    snow_els = dem.data[snow_mask]
+
+    bins = np.unique(bin_size * np.floor(snowice_els / bin_size)).data
+
+    snowice_counts, _ = np.histogram(snowice_els, bins=bins)
+    snow_counts, _ = np.histogram(snow_els, bins=bins)
+
+    pct_snow = snow_counts / snowice_counts
+
+    snow_bins, = np.where(pct_snow > 0.5)
+
+    if snow_bins.size > 0:
+        return bins[snow_bins.min():snow_bins.min() + 2].mean()
+    else:
+        return -1
+
+
+def get_snowline_stats(granule: str, fn_dem: Union[Path, str], fn_outlines: Union[Path, str],
+                       data_dir: Union[Path, str]='.', bin_size: Union[float, int]=20, how: str ='scene') -> None:
+    """
+    Calculate the following snowline stats for each glacier in a given Landsat scene:
+
+    - pct_snowice: the fraction of the glacier outline that is covered by "clean" snow/ice
+    - scaf_all: the snow-covered area fraction, calculated using the entire glacier outline
+    - scaf_clean: the snow-covered area fraction, calculated using only "clean" snow/ice
+    - clean_sla: the snowline altitude, calculated using only "clean" snow/ice
+    - glac_sla: the snowline altitude, calculated using the entire glacier mask
+
+    Output is written to {granule}_stats.csv in the current directory.
+
+    :param granule: The Landsat product ID to load (e.g., LC08_L1TP_...)
+    :param fn_dem: the filename of a DEM to use for snowline elevation estimation
+    :param fn_outlines: the filename of the glacier outlines to use
+    :param data_dir: The directory where the Landsat data files are. Defaults to current directory.
+    :param bin_size: the width of the elevation bins to use
+    :param how: How the albedo threshold was calculated for the snow map. Must be one of [individual, complex, scene].
+    :return:
+    """
+    if ',' in granule:
+        _rasts = [gu.Raster(Path(data_dir, f"{gran}_albedo_{how}_snow.tif")) for gran in granule.split(',')]
+        snow_class = gu.raster.merge_rasters(_rasts, merge_algorithm=np.max, progress=False)
+
+        _rasts = [gu.Raster(Path(data_dir, f"{gran}_albedo.tif")) for gran in granule.split(',')]
+        albedo = gu.raster.merge_rasters(_rasts, merge_algorithm=np.mean, progress=False)
+    else:
+        snow_class = gu.Raster(Path(data_dir, f"{granule}_albedo_{how}_snow.tif"))
+        albedo = gu.Raster(Path(data_dir, f"{granule}_albedo.tif"))
+
+    dem = xdem.DEM(fn_dem).reproject(snow_class)
+
+    outlines = gu.Vector(fn_outlines)
+    rasterized = outlines.rasterize(snow_class)
+
+    masked = ~albedo.get_mask() & (rasterized > 0)
+    rasterized[~masked] = 0
+
+    unique_inds = np.unique(rasterized[masked])
+
+    all_stats = []
+
+    for ind in tqdm(unique_inds, desc=granule):
+        these_stats = _snowline_stats(rasterized.data.data == ind, dem, snow_class.data.data, bin_size=bin_size)
+        these_stats['rgi_id'] = outlines.ds.loc[ind - 1].rgi_id
+        all_stats.append(pd.Series(these_stats))
+
+    all_stats = pd.concat(all_stats, ignore_index=True, axis=1).T
+    all_stats = all_stats[['rgi_id', 'pct_snowice', 'scaf_all', 'scaf_clean', 'clean_sla', 'glac_sla']]
+    all_stats.to_csv(f"{granule}_stats.csv", index=False)
+
+
+def _snowline_stats(glacier, dem, snowmap, bin_size=20):
+    glac_stats = dict()
+
+    is_snowice = np.count_nonzero(np.logical_and(glacier, snowmap > 0))
+
+    if is_snowice > 0:
+        glac_stats['pct_snowice'] = np.divide(is_snowice, np.count_nonzero(glacier))
+        glac_stats['scaf_all'] = np.count_nonzero(np.logical_and(glacier, snowmap == 2)) / np.count_nonzero(glacier)
+        glac_stats['scaf_clean'] = np.count_nonzero(np.logical_and(glacier, snowmap == 2)) / is_snowice
+
+        glac_stats['clean_sla'] = find_snowline(glacier, dem, snowmap, bin_size, clean=True)
+        glac_stats['glac_sla'] = find_snowline(glacier, dem, snowmap, bin_size, clean=False)
+
+    else:
+        glac_stats['pct_snowice'] = 0
+        glac_stats['scaf_all'] = 0
+        glac_stats['scaf_clean'] = 0
+
+        glac_stats['clean_sla'] = -1
+        glac_stats['glac_sla'] = -1
+
+    return glac_stats
