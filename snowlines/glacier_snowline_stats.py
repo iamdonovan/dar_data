@@ -24,10 +24,14 @@ fn_dem = ''
 fn_outlines = ''
 fn_csv = 'snowline_thresholds.csv'
 data_dir = '.'
+overwrite = False
 
 thresholds = prep_df(fn_csv)
 
 for granule in thresholds['granule']:
+    if Path(data_dir, f"{granule}_stats.csv").exists() and not overwrite:
+        continue
+
     if ',' in granule:
         if all([Path(data_dir, f"{gran}_albedo_scene_snow.tif").exists() for gran in granule.split(',')]):
             get_snowline_stats(granule, fn_dem, fn_outlines, data_dir=data_dir, bin_size=20)
