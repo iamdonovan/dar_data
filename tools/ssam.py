@@ -420,7 +420,7 @@ def snow_map(granule, fn_dem, fn_outlines, data_dir='.', method: str = 'nir',
     # glacier by glacier? dissolve into complexes? treat as a single entity?
     if do_individual:
         for ind in tqdm(unique_inds, desc='Individual thresholds'):
-            glac = rasterized.data == ind
+            glac = rasterized.data.data == ind
             this_snow_ice = np.logical_and.reduce([glac, glac_snow_ice, not_shadow])
 
             if method == 'nir':
@@ -518,7 +518,11 @@ def _elevation_threshold(snow_class, shadow, not_shadow, dem, bin_size=50.):
     _ice = LineString(zip(bins, 1 - ice_cdf))
     _sno = LineString(zip(bins, snow_cdf))
 
-    el_thresh = _ice.intersection(_sno).x
+    if any([np.count_nonzero(np.isnan(ice_cdf)) > 0,
+            np.count_nonzero(np.isnan(snow_cdf)) > 0]):
+        el_thresh = bins[-1]
+    else:
+        el_thresh = _ice.intersection(_sno).x
 
     snow_class.data[np.logical_and(shadow, (dem >= el_thresh).data)] = 2
     snow_class.data[np.logical_and(shadow, (dem < el_thresh).data)] = 1
