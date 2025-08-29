@@ -798,7 +798,7 @@ def get_snowline_stats(granule: str, fn_dem: Union[Path, str], fn_outlines: Unio
 def _snowline_stats(glacier, dem, snowmap, bin_size=20):
     glac_stats = dict()
 
-    is_snowice = np.count_nonzero(np.logical_and(glacier, snowmap > 0))
+    is_snowice = np.count_nonzero(np.logical_and(glacier, np.logical_or(snowmap == 1, snowmap == 2)))
 
     if is_snowice > 0:
         glac_stats['pct_snowice'] = np.divide(is_snowice, np.count_nonzero(glacier))
